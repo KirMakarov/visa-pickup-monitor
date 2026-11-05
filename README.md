@@ -54,7 +54,13 @@ The script creates `data/state.json` automatically. It contains private discover
 - Adding targets starts monitoring them; removing targets stops checking them while keeping their history. Console matches are printed only when first recorded.
 - Once all current targets have been found and any required match notifications sent, the script reports completion and makes no source-page or PDF requests. Adding targets or enabling Telegram resumes the required work automatically.
 
-Scheduling, daily reports, GitHub Actions, and Healthchecks.io are planned in later phases.
+## Run on GitHub Actions
+
+Use the [private runner template](examples/github-actions/README.md) to run a pinned version of this code on GitHub Actions with private settings and persistent state. Its workflow supports the planned Belgrade schedule and manual runs. Copy the template into a separate private repository; the template workflow is inactive in this public repository.
+
+In the private repository, configure both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as GitHub Actions repository secrets. The setup guide explains which template files to retain and how to update an existing runner.
+
+Daily reports and Healthchecks.io are planned in later iterations.
 
 ## Verify
 
