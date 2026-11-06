@@ -47,6 +47,32 @@ By default, local and hosted monitoring start with separate history. To continue
 
 To update the monitor, test and publish the public code first. Then change `MONITOR_REF` to the selected full commit SHA in the private workflow, commit it yourself, and perform a manual run. Updating the public default branch alone does not update the running monitor.
 
+### Copy template updates with the helper
+
+From the public monitor checkout, run the helper with the path to your existing
+private runner and the full SHA of the tested public version you have published:
+
+```sh
+python3 scripts/update_runner.py ../vpm-runner --monitor-ref YOUR_PUBLISHED_COMMIT_SHA --dry-run
+python3 scripts/update_runner.py ../vpm-runner --monitor-ref YOUR_PUBLISHED_COMMIT_SHA
+git -C ../vpm-runner diff
+```
+
+Replace `YOUR_PUBLISHED_COMMIT_SHA` with the actual 40-character SHA. The helper
+sets `MONITOR_REF` to that value but does not verify that GitHub has the commit.
+It also works from another directory when invoked by its full script path.
+On Windows, use `python` instead of `python3`.
+
+Only the workflow, `.gitignore`, `README.md`, and `config.env.example` are updated.
+Private `config.env`, `.env`, state, and other files are preserved. Existing custom
+changes in the four template files must be committed or moved before updating;
+review the resulting diff and reapply any customizations you still need. The
+helper requires the root of an existing checkout and refuses symlinked update
+paths. It does not commit, push, or start a workflow.
+
+Run the helper while the private workflow is idle. Review and commit the updates
+yourself, push them, then perform a manual smoke run before scheduled acceptance.
+
 GitHub may delay or drop scheduled runs. See [GitHub schedule limitations](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
 
 ## Optional independent Healthchecks monitoring
