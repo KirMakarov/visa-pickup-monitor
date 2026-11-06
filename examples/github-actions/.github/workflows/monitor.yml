@@ -2,7 +2,9 @@ name: Visa Pickup Monitor
 
 "on":
   schedule:
-    - cron: '17 12-15,17 * * 1-4'
+    - cron: "17 12-15 * * 1-4"
+      timezone: Europe/Belgrade
+    - cron: "17 17 * * 1-4"
       timezone: Europe/Belgrade
   workflow_dispatch:
 
@@ -38,7 +40,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: '3.14'
+          python-version: "3.14"
 
       - name: Install monitor dependencies
         run: python -m pip install --disable-pip-version-check -r monitor-code/requirements.txt
@@ -48,11 +50,17 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
         run: |
           cp config.env .env
           if [[ -n "$TELEGRAM_BOT_TOKEN" ]]; then echo 'TELEGRAM_BOT_TOKEN: configured'; else echo 'TELEGRAM_BOT_TOKEN: missing'; fi
           if [[ -n "$TELEGRAM_CHAT_ID" ]]; then echo 'TELEGRAM_CHAT_ID: configured'; else echo 'TELEGRAM_CHAT_ID: missing'; fi
-          python -u monitor-code/monitor.py
+          if [[ "$EVENT_NAME" == schedule && "$EVENT_SCHEDULE" == '17 17 * * 1-4' ]]; then
+            python -u monitor-code/monitor.py --report
+          else
+            python -u monitor-code/monitor.py
+          fi
 
       - name: Save state after a successful or failed check
         if: ${{ !cancelled() && (steps.check.outcome == 'success' || steps.check.outcome == 'failure') }}

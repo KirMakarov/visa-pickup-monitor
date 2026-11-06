@@ -188,7 +188,7 @@ class ScriptTests(unittest.TestCase):
 
     def run_script(
         self, responses, numbers="123456,000123", telegram=False,
-        today="2026-11-05", chat_id="456",
+        today="2026-11-05", chat_id="456", report=False,
     ):
         stdout, stderr = StringIO(), StringIO()
         settings = {"PAGE_URL": "https://embassy.example/start", "NUMBERS": numbers}
@@ -203,7 +203,7 @@ class ScriptTests(unittest.TestCase):
             redirect_stdout(stdout),
             redirect_stderr(stderr),
         ):
-            result = monitor.main(self.state_path)
+            result = monitor.main(self.state_path, report=report)
         return result, stdout.getvalue(), stderr.getvalue()
 
     def responses(self, pdf):
@@ -413,6 +413,89 @@ class ScriptTests(unittest.TestCase):
             sender.assert_called_once()
         self.assertEqual(self.state_path.read_text(), "broken state")
 
+    def test_daily_counts_recovery_cache_and_rollover(self):
+        self.assertEqual(self.run_script(self.responses(make_pdf("No entries")))[0], 1)
+        pdf = make_pdf("654321 01.01.2099 08:00-10:00")
+        result, output, _ = self.run_script(self.responses(pdf), report=True)
+        self.assertEqual(result, 0)
+        self.assertIn("Successful checks: 1", output)
+        self.assertIn("Failed checks: 1", output)
+        self.assertIn("PDF downloaded: yes", output)
+        self.assertIn("Unresolved errors: none", output)
+        result, output, _ = self.run_script([self.responses(pdf)[0]], report=True)
+        self.assertEqual(result, 0)
+        self.assertIn("Successful checks: 2", output)
+        result, output, _ = self.run_script(self.responses(pdf), today="2026-11-06", report=True)
+        self.assertEqual(result, 0)
+        self.assertIn("Successful checks: 1", output)
+        self.assertIn("Failed checks: 0", output)
+
+    def test_report_after_failure_is_retried_and_deduplicated(self):
+        with patch("monitor.send_telegram", side_effect=[None, monitor.MonitorError("report failed")]):
+            result, _, _ = self.run_script([URLError("offline")] * 3, telegram=True, report=True)
+        self.assertEqual(result, 1)
+        self.assertFalse(monitor.load_state(self.state_path).daily["report_delivered"])
+        with patch("monitor.send_telegram") as sender:
+            result, _, _ = self.run_script([URLError("offline")] * 3, telegram=True, report=True)
+            self.assertEqual(result, 1)
+            sender.assert_called_once()
+            self.assertIn("Failed checks: 2", sender.call_args.args[1])
+        with patch("monitor.send_telegram") as sender:
+            self.run_script([URLError("offline")] * 3, telegram=True, report=True)
+            sender.assert_not_called()
+
+    def test_completion_suppresses_report_and_later_noop(self):
+        pdf = make_pdf("123456 01.01.2020 08:00-10:00")
+        result, output, _ = self.run_script(self.responses(pdf), numbers="123456", report=True)
+        self.assertEqual(result, 0)
+        self.assertNotIn("daily report", output)
+        before = self.state_path.read_bytes()
+        result, output, _ = self.run_script([], numbers="123456", report=True)
+        self.assertEqual(result, 0)
+        self.assertNotIn("daily report", output)
+        self.assertEqual(self.state_path.read_bytes(), before)
+
+    def test_legacy_state_preserves_notification_history(self):
+        legacy = monitor.asdict(monitor.State(found_numbers={"123456": "https://embassy.example/list.pdf"},
+                                            notified_numbers=["123456"], error_notifications=["old error"]))
+        legacy.pop("daily")
+        self.state_path.parent.mkdir(parents=True)
+        self.state_path.write_text(json.dumps({"version": 1, **legacy}))
+        with patch("monitor.send_telegram") as sender:
+            result, _, _ = self.run_script(self.responses(make_pdf("654321 01.01.2099 08:00-10:00")), telegram=True)
+            self.assertEqual(result, 0)
+            sender.assert_not_called()
+        state = monitor.load_state(self.state_path)
+        self.assertEqual(state.notified_numbers, ["123456"])
+        self.assertEqual(state.daily["successful"], 1)
+        self.assertEqual(json.loads(self.state_path.read_text())["version"], 2)
+
+    def test_report_confirmation_failure_does_not_change_check_outcome(self):
+        original_save = monitor.save_state
+        def save(state, path):
+            if state.daily and state.daily["report_delivered"]:
+                raise monitor.MonitorError("confirmation failed")
+            original_save(state, path)
+        pdf = make_pdf("654321 01.01.2099 08:00-10:00")
+        with patch("monitor.save_state", side_effect=save), patch("monitor.send_telegram") as sender:
+            result, _, stderr = self.run_script(self.responses(pdf), telegram=True, report=True)
+        self.assertEqual(result, 1)
+        self.assertIn("confirmation failed", stderr)
+        sender.assert_called_once()
+        daily = monitor.load_state(self.state_path).daily
+        self.assertEqual((daily["successful"], daily["failed"]), (1, 0))
+        self.assertFalse(daily["report_delivered"])
+        with patch("monitor.send_telegram") as sender:
+            result, _, _ = self.run_script([self.responses(pdf)[0]], telegram=True)
+            self.assertEqual(result, 0)
+            sender.assert_not_called()
+        with patch("monitor.send_telegram") as sender:
+            result, _, _ = self.run_script(self.responses(pdf), telegram=True, report=True, today="2026-11-06")
+            self.assertEqual(result, 0)
+            sender.assert_called_once()
+            self.assertIn("2026-11-06", sender.call_args.args[1])
+            self.assertIn("Successful checks: 1", sender.call_args.args[1])
+
 
 class StateTests(unittest.TestCase):
     def test_atomic_save_failure_keeps_previous_state_and_removes_temporary_file(self):
@@ -429,9 +512,9 @@ class StateTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).glob(".state-*.tmp")), [])
 
     def test_invalid_state_schemas_are_rejected(self):
-        baseline = {"version": 1, **monitor.asdict(monitor.State())}
+        baseline = {"version": 2, **monitor.asdict(monitor.State())}
         examples = (
-            [], {}, {**baseline, "version": 2}, {**baseline, "version": True},
+            [], {}, {**baseline, "version": 3}, {**baseline, "version": True},
             {**baseline, "notified_numbers": ["123456"]},
             {**baseline, "found_numbers": ["123456"]},
             {**baseline, "found_numbers": {"123456": None}},

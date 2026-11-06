@@ -4,7 +4,7 @@ Copy this directory into a separate **private** repository. It contains the work
 
 Keep this directory in the public repository as the maintained template, with synthetic example data. The active workflow lives in the private runner repository. When updating an existing runner, copy the changed template files into it and commit them there; preserve its private `config.env` and `data/state.json`. Editing this public template alone does not update an existing runner.
 
-The workflow runs Monday through Thursday at 12:17, 13:17, 14:17, 15:17, and 17:17 in `Europe/Belgrade`, including daylight saving changes. It also supports manual runs. Daily reports and Healthchecks.io are not included in this iteration.
+The workflow runs Monday through Thursday at 12:17, 13:17, 14:17, 15:17, and 17:17 in `Europe/Belgrade`, including daylight saving changes. The final scheduled occurrence requests a daily report, even if GitHub starts it late. Earlier scheduled and manual runs contribute to daily totals without requesting a report. Healthchecks.io is planned in a later iteration.
 
 ## Set up the private repository
 
@@ -19,7 +19,7 @@ The workflow runs Monday through Thursday at 12:17, 13:17, 14:17, 15:17, and 17:
    ```
 
 3. Edit `config.env` with your own `NUMBERS` and `PAGE_URL`. In the private repository's **Settings > Secrets and variables > Actions**, create both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as **repository secrets** to enable Telegram. Omit both secrets for console-only operation. In hosted mode, both Telegram settings come from Secrets; environment variables supplied by the workflow override `.env` values.
-4. Check `MONITOR_REF` in `.github/workflows/monitor.yml`. It must be the full SHA of a tested commit available in the public `KirMakarov/visa-pickup-monitor` repository. Publish that commit before running the workflow. The supplied SHA identifies the completed local state-and-alerts implementation.
+4. Set `MONITOR_REF` in `.github/workflows/monitor.yml` to the full SHA of the tested reporting implementation after publishing it to the public `KirMakarov/visa-pickup-monitor` repository. The supplied SHA predates daily reporting and must be updated before enabling the report schedule.
 5. Commit and push the runner files yourself:
 
    ```sh

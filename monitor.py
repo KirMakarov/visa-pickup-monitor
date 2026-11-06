@@ -1,6 +1,7 @@
 """Check the German Embassy in Belgrade's current visa pickup list once."""
 
 import json
+import argparse
 import os
 import re
 import sys
@@ -56,6 +57,7 @@ class State:
     found_numbers: dict[str, str] = field(default_factory=dict)
     notified_numbers: list[str] = field(default_factory=list)
     error_notifications: list[str] = field(default_factory=list)
+    daily: dict | None = None
 
 
 def read_settings(env_path: str | Path = ".env") -> dict[str, str | None]:
@@ -101,11 +103,27 @@ def load_state(path: Path) -> State:
         raise MonitorError("Could not read state; restore data/state.json before retrying.") from exc
 
     try:
-        if not isinstance(data, dict) or set(data) != set(asdict(State())) | {"version"}:
+        if not isinstance(data, dict):
             raise ValueError
-        if type(data["version"]) is not int or data.pop("version") != 1:
+        version = data.pop("version", None)
+        if type(version) is not int or version not in (1, 2):
+            raise ValueError
+        expected = set(asdict(State())) - ({"daily"} if version == 1 else set())
+        if set(data) != expected:
             raise ValueError
         state = State(**data)
+        if state.daily is not None:
+            daily = state.daily
+            if not isinstance(daily, dict) or set(daily) != {"date", "successful", "failed", "pdf_downloaded", "errors", "report_delivered"}:
+                raise ValueError
+            if not isinstance(daily["date"], str) or date.fromisoformat(daily["date"]).isoformat() != daily["date"]:
+                raise ValueError
+            if any(type(daily[key]) is not int or daily[key] < 0 for key in ("successful", "failed")):
+                raise ValueError
+            if any(type(daily[key]) is not bool for key in ("pdf_downloaded", "report_delivered")):
+                raise ValueError
+            if not isinstance(daily["errors"], list) or any(not isinstance(x, str) for x in daily["errors"]):
+                raise ValueError
         for values in (state.last_targets, state.notified_numbers):
             if not isinstance(values, list) or any(
                 not isinstance(number, str) or NUMBER_PATTERN.fullmatch(number) is None for number in values
@@ -138,7 +156,7 @@ def load_state(path: Path) -> State:
 
 
 def save_state(state: State, path: Path) -> None:
-    data = {"version": 1, **asdict(state)}
+    data = {"version": 2, **asdict(state)}
     for name in ("last_targets", "notified_numbers", "error_notifications"):
         data[name] = sorted(data[name])
     payload = json.dumps(data, indent=2, sort_keys=True) + "\n"
@@ -330,6 +348,7 @@ def check_pdf(page_url: str, targets: tuple[str, ...], state: State, today: str)
         return
 
     pdf, effective_pdf_url = fetch(pdf_url, "the pickup-list PDF")
+    state.daily["pdf_downloaded"] = True
     numbers = extract_numbers(pdf)
     print(f"PDF: {effective_pdf_url}")
     print(f"Valid application numbers: {len(numbers)}")
@@ -367,18 +386,32 @@ def report_errors(
                 print(f"Error: {exc}", file=sys.stderr)
 
 
-def main(state_path: Path = STATE_PATH) -> int:
+def main(state_path: Path = STATE_PATH, report: bool = False) -> int:
     telegram = None
     state = None
     errors = []
+    active = False
+    saved_result = False
+    complete = False
     try:
         settings = read_settings()
         telegram = load_telegram(settings)
         state = load_state(state_path)
         page_url, targets = load_config(settings)
+        complete = set(targets) <= state.found_numbers.keys() and (
+            telegram is None or set(targets) <= set(state.notified_numbers)
+        )
+        if complete:
+            print("Monitoring complete for the current target numbers.")
+            return 0
+        today = belgrade_date()
+        if state.daily is None or state.daily["date"] != today:
+            state.daily = {"date": today, "successful": 0, "failed": 0,
+                           "pdf_downloaded": False, "errors": [], "report_delivered": False}
+        active = True
         if not set(targets) <= state.found_numbers.keys():
             try:
-                check_pdf(page_url, targets, state, belgrade_date())
+                check_pdf(page_url, targets, state, today)
             except MonitorError as exc:
                 errors.append(exc)
 
@@ -402,19 +435,46 @@ def main(state_path: Path = STATE_PATH) -> int:
 
         if not errors:
             state.error_notifications.clear()
-            save_state(state, state_path)
-            if set(targets) <= state.found_numbers.keys() and (
+            complete = set(targets) <= state.found_numbers.keys() and (
                 telegram is None or set(targets) <= set(state.notified_numbers)
-            ):
+            )
+            if complete:
                 print("Monitoring complete for the current target numbers.")
     except MonitorError as exc:
         errors.append(exc)
 
+    if active:
+        state.daily["failed" if errors else "successful"] += 1
+        state.daily["errors"] = list(dict.fromkeys(str(error) for error in errors))
+        try:
+            save_state(state, state_path)
+            saved_result = True
+        except MonitorError as exc:
+            errors.append(exc)
     if errors:
-        report_errors(errors, telegram, state, state_path)
-        return 1
-    return 0
+        report_errors(errors, telegram, state if not active or saved_result else None, state_path)
+
+    if report and saved_result and not complete:
+        daily = state.daily
+        summary = (f"Visa Pickup Monitor daily report: {daily['date']}\n"
+                   f"Successful checks: {daily['successful']}\n"
+                   f"Failed checks: {daily['failed']}\n"
+                   f"PDF downloaded: {'yes' if daily['pdf_downloaded'] else 'no'}\n"
+                   f"Unresolved errors: {', '.join(daily['errors']) if daily['errors'] else 'none'}")
+        if telegram is None:
+            print(summary)
+        elif not daily["report_delivered"]:
+            try:
+                send_telegram(telegram, summary)
+                daily["report_delivered"] = True
+                save_state(state, state_path)
+            except MonitorError as exc:
+                print(f"Error: Daily report delivery or confirmation failed: {exc}", file=sys.stderr)
+                return 1
+    return 1 if errors else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--report", action="store_true", help="produce today's daily report")
+    sys.exit(main(report=parser.parse_args().report))
