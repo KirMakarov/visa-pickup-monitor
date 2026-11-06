@@ -78,3 +78,25 @@ jobs:
             -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
             commit -m 'Update monitor state' -- data/state.json
           git push origin "HEAD:$DEFAULT_BRANCH"
+
+      - name: Signal final hosted outcome
+        if: ${{ !cancelled() && github.event_name == 'schedule' }}
+        env:
+          HEALTHCHECKS_PING_URL: ${{ secrets.HEALTHCHECKS_PING_URL }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [[ -z "$HEALTHCHECKS_PING_URL" ]]; then
+            exit 0
+          fi
+          url="${HEALTHCHECKS_PING_URL%/}"
+          if [[ "$JOB_STATUS" != success ]]; then
+            url="$url/fail"
+          fi
+          if ! response=$(curl --silent --max-time 15 --write-out '\n%{http_code}' "$url"); then
+            echo 'Healthchecks signal failed.' >&2
+            exit 1
+          fi
+          if [[ "$response" != $'OK\n200' ]]; then
+            echo 'Healthchecks did not accept the signal.' >&2
+            exit 1
+          fi

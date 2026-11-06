@@ -76,8 +76,9 @@ Use the [private runner template](examples/github-actions/README.md) to run a pi
 
 In the private repository, configure both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as GitHub Actions repository secrets. The setup guide explains which template files to retain and how to update an existing runner.
 
-The final scheduled check requests the daily report. Healthchecks.io is planned
-in a later iteration.
+The final scheduled check requests the daily report. The runner can optionally
+signal scheduled outcomes and detect missed runs through Healthchecks.io; see the
+private runner guide for configuration and rollout.
 
 ## Verify
 

@@ -4,7 +4,7 @@ Copy this directory into a separate **private** repository. It contains the work
 
 Keep this directory in the public repository as the maintained template, with synthetic example data. The active workflow lives in the private runner repository. When updating an existing runner, copy the changed template files into it and commit them there; preserve its private `config.env` and `data/state.json`. Editing this public template alone does not update an existing runner.
 
-The workflow runs Monday through Thursday at 12:17, 13:17, 14:17, 15:17, and 17:17 in `Europe/Belgrade`, including daylight saving changes. The final scheduled occurrence requests a daily report, even if GitHub starts it late. Earlier scheduled and manual runs contribute to daily totals without requesting a report. Healthchecks.io is planned in a later iteration.
+The workflow runs Monday through Thursday at 12:17, 13:17, 14:17, 15:17, and 17:17 in `Europe/Belgrade`, including daylight saving changes. The final scheduled occurrence requests a daily report, even if GitHub starts it late. Earlier scheduled and manual runs contribute to daily totals without requesting a report.
 
 ## Set up the private repository
 
@@ -47,4 +47,30 @@ By default, local and hosted monitoring start with separate history. To continue
 
 To update the monitor, test and publish the public code first. Then change `MONITOR_REF` to the selected full commit SHA in the private workflow, commit it yourself, and perform a manual run. Updating the public default branch alone does not update the running monitor.
 
-GitHub may delay or drop scheduled runs. Independent detection of missing runs will be added with Healthchecks.io in a later iteration. See [GitHub schedule limitations](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
+GitHub may delay or drop scheduled runs. See [GitHub schedule limitations](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
+
+## Optional independent Healthchecks monitoring
+
+Create a production check at [Healthchecks.io](https://healthchecks.io/) using cron
+`17 12-15,17 * * 1-4`, time zone `Europe/Belgrade`, and a 30-minute grace period.
+Connect standard failure and recovery notifications to Telegram and a backup email
+address; leave extra periodic reminders disabled. Add the check's base ping URL as
+the private repository secret `HEALTHCHECKS_PING_URL`. Leave it unset to disable
+the integration. Keep the URL private: it is a credential.
+
+Only scheduled executions send a final signal, after monitoring, report delivery,
+and state persistence have been attempted. Any failed required step signals failure,
+including setup or state push. Completed monitoring still signals success. A failed
+or rejected signal fails the workflow; an interrupted run may instead be detected as
+missing after the grace period. Manual and local runs never signal Healthchecks.
+The script's detailed error alerts and independent Healthchecks alerts can both
+arrive for one failure. No personal monitoring data is sent with the signal.
+The workflow checks for HTTP 200 and the exact `OK` response; the
+[ping API](https://healthchecks.io/docs/http_api/) can otherwise return HTTP 200
+for an unknown check or a rate-limited request.
+
+Before rollout, publish the tested public revision and explicitly update the private
+workflow and its `MONITOR_REF`, preserving the private configuration and state. For
+acceptance testing, use a separate control check for failure and missed-run alerts;
+do not interrupt the production check. When retiring monitoring, disable the
+workflow first, then pause its independent Healthchecks check.
