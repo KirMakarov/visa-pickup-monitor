@@ -67,8 +67,27 @@ All scheduled checks behave alike. The runner can optionally signal scheduled ou
 
 ## Verify
 
+Install the development tools in the same Python 3.14 virtual environment:
+
 ```sh
+.venv/bin/python -m pip install -r requirements-dev.txt
+```
+
+Run the same checks and tests as CI:
+
+```sh
+.venv/bin/pre-commit run --all-files --show-diff-on-failure
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Tests run offline with synthetic data and generated PDFs. The real embassy PDF is checked separately and is not stored in this repository.
+The checks cover Python linting, import sorting and formatting, complexity, YAML syntax, trailing whitespace, and file endings. Some checks fix files automatically; review their changes and run the checks again. Three existing functions are exempt from the complexity limit of 10.
+
+Optionally install the Git hook to check staged files before each commit:
+
+```sh
+.venv/bin/pre-commit install
+```
+
+The first run downloads the pinned hook versions. Tests are not run by the hook; they run separately and in CI. Tests run offline with synthetic data and generated PDFs. The real embassy PDF is checked separately and is not stored in this repository.
+
+On Windows, use `.venv\Scripts\pre-commit.exe` for the pre-commit commands above.
