@@ -21,8 +21,13 @@ class WorkflowTests(unittest.TestCase):
     def test_health_signal_follows_core_steps_and_excludes_manual_and_cancelled_runs(self):
         workflow = WORKFLOW.read_text()
         signal = workflow.split("      - name: Signal final hosted outcome\n", 1)[1]
-        self.assertIn("!cancelled() && github.event_name == 'schedule'", signal)
+        self.assertIn("!cancelled() && inputs.scheduled", signal)
         self.assertIn("JOB_STATUS: ${{ job.status }}", signal)
+        self.assertIn("  workflow_dispatch:\n    inputs:", workflow)
+        self.assertNotIn("  schedule:", workflow)
+        for name in ("scheduled", "report"):
+            self.assertIn(f"      {name}:\n", workflow)
+        self.assertEqual(workflow.count("        type: boolean\n        default: false"), 2)
         self.assertLess(workflow.index("      - name: Save state after"), workflow.index("      - name: Signal final hosted outcome"))
         self.assertNotIn("/start", signal)
 
@@ -85,8 +90,8 @@ class WorkflowTests(unittest.TestCase):
                     (root / name).write_text(contents)
                     (root / name).chmod(0o755)
                 env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "CASE": case,
-                       "DEFAULT_BRANCH": "main", "EVENT_NAME": "schedule",
-                       "EVENT_SCHEDULE": "17 17 * * 1-4", "TELEGRAM_BOT_TOKEN": "",
+                       "DEFAULT_BRANCH": "main", "SCHEDULED": "true",
+                       "REPORT": "true", "TELEGRAM_BOT_TOKEN": "",
                        "TELEGRAM_CHAT_ID": "", "HEALTHCHECKS_PING_URL": "https://health.example/check",
                        "MONITOR_EXIT": "1" if case in ("monitor", "report") else "0"}
                 status = "success"
@@ -106,19 +111,21 @@ class WorkflowTests(unittest.TestCase):
                 if case in ("monitor", "report"):
                     self.assertTrue(any(line.startswith("git push") for line in calls))
 
-    def test_report_selected_by_scheduled_occurrence(self):
+    def test_report_selected_by_explicit_scheduled_intent(self):
         script = step_script("Check the pickup list")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "config.env").write_text("NUMBERS=123456\n")
             (root / "python").write_text('#!/bin/sh\nprintf "%s\\n" "$*" > args\nexit "${MONITOR_EXIT:-0}"\n')
             (root / "python").chmod(0o755)
-            for event, schedule, expected in (("schedule", "17 17 * * 1-4", True),
-                                               ("schedule", "17 12-15 * * 1-4", False),
-                                               ("workflow_dispatch", "", False)):
-                with self.subTest(event=event, schedule=schedule):
+            for scheduled, report, expected in (("true", "true", True),
+                                                 ("true", "false", False),
+                                                 ("false", "false", False),
+                                                 ("false", "true", False),
+                                                 ("", "", False)):
+                with self.subTest(scheduled=scheduled, report=report):
                     env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
-                           "EVENT_NAME": event, "EVENT_SCHEDULE": schedule,
+                           "SCHEDULED": scheduled, "REPORT": report,
                            "TELEGRAM_BOT_TOKEN": "", "TELEGRAM_CHAT_ID": ""}
                     result = subprocess.run(["bash", "-e", "-c", script], cwd=root, env=env, capture_output=True)
                     self.assertEqual(result.returncode, 0)

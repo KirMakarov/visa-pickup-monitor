@@ -4,7 +4,7 @@ Copy this directory into a separate **private** repository. It contains the work
 
 Keep this directory in the public repository as the maintained template, with synthetic example data. The active workflow lives in the private runner repository. When updating an existing runner, copy the changed template files into it and commit them there; preserve its private `config.env` and `data/state.json`. Editing this public template alone does not update an existing runner.
 
-The workflow runs Monday through Thursday at 12:17, 13:17, 14:17, 15:17, and 17:17 in `Europe/Belgrade`, including daylight saving changes. The final scheduled occurrence requests a daily report, even if GitHub starts it late. Earlier scheduled and manual runs contribute to daily totals without requesting a report.
+cron-job.org dispatches the workflow Monday through Thursday at 12:17, 13:17, 14:17, 15:17, and 17:17 in `Europe/Belgrade`, including daylight saving changes. The final request explicitly selects a daily report, even if GitHub starts it late. Earlier scheduled and ordinary manual runs contribute to daily totals without requesting a report.
 
 ## Set up the private repository
 
@@ -31,7 +31,7 @@ The workflow runs Monday through Thursday at 12:17, 13:17, 14:17, 15:17, and 17:
 
 6. Open **Actions > Visa Pickup Monitor > Run workflow** and run it from the default branch. Verify the run succeeds and, if state changed, that the bot commits `data/state.json`. Run it again to verify the state is reused. If you want to exercise delivery of a Telegram match notification, use a current target of your own that appears in the PDF.
 
-The workflow must be present on the default branch for scheduled runs and the manual-run button. It refuses to run in public repositories. See GitHub's [schedule documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onschedule).
+The workflow must be present on the default branch for API dispatch and the manual-run button. It refuses to run in public repositories. Leave both inputs unchecked for an ordinary manual run; selecting `scheduled` opts a dispatch into Healthchecks signaling, and selecting both `scheduled` and `report` also requests a report.
 
 If Telegram configuration fails, check both repository secret names and confirm the private workflow references both under the check step's `env`. The check logs show only whether each secret is configured, without printing values. After pushing a workflow fix, start a new **Run workflow**. This template does not select a GitHub environment, so environment-scoped secrets require additional job configuration; use repository secrets for this setup. See GitHub's [secrets documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets).
 
@@ -73,7 +73,60 @@ paths. It does not commit, push, or start a workflow.
 Run the helper while the private workflow is idle. Review and commit the updates
 yourself, push them, then perform a manual smoke run before scheduled acceptance.
 
-GitHub may delay or drop scheduled runs. See [GitHub schedule limitations](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
+## Configure cron-job.org dispatch
+
+Create a GitHub fine-grained personal access token limited to the private runner
+repository with repository **Actions: write** permission. Store it only in the
+cron-job.org request configuration; it is a credential. Do not put Telegram or
+Healthchecks secrets in cron-job.org. Create two jobs with the following shared
+request settings, substituting the private repository owner, repository name,
+default branch, and token:
+
+- Method: `POST`; URL: `https://api.github.com/repos/OWNER/REPOSITORY/actions/workflows/monitor.yml/dispatches`.
+- Headers: `Accept: application/vnd.github+json`, `Authorization: Bearer TOKEN`,
+  `Content-Type: application/json`, `X-GitHub-Api-Version: 2022-11-28`.
+- Time zone: `Europe/Belgrade`; weekdays Monday through Thursday.
+
+| Job | Local times | JSON request body |
+| --- | --- | --- |
+| Ordinary checks | 12:17, 13:17, 14:17, 15:17 | `{"ref":"DEFAULT_BRANCH","inputs":{"scheduled":"true","report":"false"}}` |
+| Daily report | 17:17 | `{"ref":"DEFAULT_BRANCH","inputs":{"scheduled":"true","report":"true"}}` |
+
+Replace `DEFAULT_BRANCH` with the actual default branch in each body. Configure
+both jobs before enabling them and verify their settings and time zone. The
+[GitHub dispatch API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)
+requires the workflow to exist on the default branch. An accepted HTTP response
+only confirms dispatch, not execution or delivery. Check cron-job.org history,
+the corresponding GitHub run and its outcome, and the final Healthchecks signal
+separately. Do not publish request headers or token values in logs or screenshots.
+A 401 or 403 can indicate an invalid, expired, insufficiently scoped, or unapproved
+token; check its access and expiry. For dispatch failures inspect the scheduler
+response and workflow path, repository, branch, and permissions. If a request was
+accepted but no run starts or it fails, inspect GitHub Actions and Healthchecks.
+Runs may be delayed or duplicated; neither exact start times nor exactly-once
+execution are guaranteed.
+
+### Controlled migration
+
+1. First observe several consecutive automatic dispatches with a separate diagnostic
+   workflow. Record expected, request, and GitHub run times with time zones and run
+   outcomes. A test button or HTTP acceptance alone is insufficient.
+2. Prepare the two production requests disabled and review this template, the
+   private runner update, and the preserved state and `MONITOR_REF`. Use the helper
+   above after the owner publishes the tested code, or select the existing tested
+   public revision if appropriate. The owner makes the private commit and push.
+3. In a controlled window, have the owner publish the updated workflow that removes
+   native GitHub schedules, then enable the two external jobs. Do not leave both
+   production schedulers active. Keep manual dispatch available.
+4. Perform owner-assisted smoke checks of both request configurations and confirm
+   the GitHub runs, report intent, final Healthchecks signal, and ordinary manual
+   defaults. Observe real scheduled runs and the daily report under the separate
+   acceptance ticket. Retire temporary diagnostic schedules after acceptance;
+   preserve their evidence and credential files.
+
+Keep the existing Healthchecks schedule and grace period during this switch. Use
+an isolated control check for failure and missed-run acceptance, never the
+production check.
 
 ## Optional independent Healthchecks monitoring
 
@@ -98,5 +151,5 @@ for an unknown check or a rate-limited request.
 Before rollout, publish the tested public revision and explicitly update the private
 workflow and its `MONITOR_REF`, preserving the private configuration and state. For
 acceptance testing, use a separate control check for failure and missed-run alerts;
-do not interrupt the production check. When retiring monitoring, disable the
-workflow first, then pause its independent Healthchecks check.
+do not interrupt the production check. When retiring monitoring, disable both cron-job.org jobs first, then pause its
+independent Healthchecks check.

@@ -1,12 +1,16 @@
 name: Visa Pickup Monitor
 
 "on":
-  schedule:
-    - cron: "17 12-15 * * 1-4"
-      timezone: Europe/Belgrade
-    - cron: "17 17 * * 1-4"
-      timezone: Europe/Belgrade
   workflow_dispatch:
+    inputs:
+      scheduled:
+        description: Scheduled monitoring execution
+        type: boolean
+        default: false
+      report:
+        description: Request the daily report (scheduled executions only)
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -50,13 +54,13 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          SCHEDULED: ${{ inputs.scheduled }}
+          REPORT: ${{ inputs.report }}
         run: |
           cp config.env .env
           if [[ -n "$TELEGRAM_BOT_TOKEN" ]]; then echo 'TELEGRAM_BOT_TOKEN: configured'; else echo 'TELEGRAM_BOT_TOKEN: missing'; fi
           if [[ -n "$TELEGRAM_CHAT_ID" ]]; then echo 'TELEGRAM_CHAT_ID: configured'; else echo 'TELEGRAM_CHAT_ID: missing'; fi
-          if [[ "$EVENT_NAME" == schedule && "$EVENT_SCHEDULE" == '17 17 * * 1-4' ]]; then
+          if [[ "$SCHEDULED" == true && "$REPORT" == true ]]; then
             python -u monitor-code/monitor.py --report
           else
             python -u monitor-code/monitor.py
@@ -80,7 +84,7 @@ jobs:
           git push origin "HEAD:$DEFAULT_BRANCH"
 
       - name: Signal final hosted outcome
-        if: ${{ !cancelled() && github.event_name == 'schedule' }}
+        if: ${{ !cancelled() && inputs.scheduled }}
         env:
           HEALTHCHECKS_PING_URL: ${{ secrets.HEALTHCHECKS_PING_URL }}
           JOB_STATUS: ${{ job.status }}

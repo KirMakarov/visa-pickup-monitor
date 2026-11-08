@@ -72,7 +72,7 @@ history; daily totals begin with the first recorded check after the upgrade.
 
 ## Run on GitHub Actions
 
-Use the [private runner template](examples/github-actions/README.md) to run a pinned version of this code on GitHub Actions with private settings and persistent state. Its workflow supports the planned Belgrade schedule and manual runs. Copy the template into a separate private repository; the template workflow is inactive in this public repository.
+Use the [private runner template](examples/github-actions/README.md) to run a pinned version of this code on GitHub Actions with private settings and persistent state. cron-job.org triggers its Belgrade schedule, and its workflow also supports manual runs. Copy the template into a separate private repository; the template workflow is inactive in this public repository.
 
 In the private repository, configure both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as GitHub Actions repository secrets. The setup guide explains which template files to retain and how to update an existing runner.
 

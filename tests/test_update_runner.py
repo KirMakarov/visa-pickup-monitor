@@ -35,7 +35,11 @@ class RunnerUpdateTests(unittest.TestCase):
             target.write_bytes(value)
         result = self.run_update()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f"  MONITOR_REF: {SHA}", (self.runner / ".github/workflows/monitor.yml").read_text())
+        workflow = (self.runner / ".github/workflows/monitor.yml").read_text()
+        self.assertIn(f"  MONITOR_REF: {SHA}", workflow)
+        self.assertIn("  workflow_dispatch:\n    inputs:", workflow)
+        self.assertIn("!cancelled() && inputs.scheduled", workflow)
+        self.assertNotIn("  schedule:", workflow)
         for name in (".gitignore", "README.md", "config.env.example"):
             self.assertEqual((self.runner / name).read_bytes(), (PROJECT / "examples/github-actions" / name).read_bytes())
         for name, value in private.items():
