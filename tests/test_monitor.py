@@ -1002,17 +1002,114 @@ class TelegramTests(unittest.TestCase):
                 opener.assert_called_once()
                 pause.assert_not_called()
 
-    def test_api_level_temporary_failure_is_retried(self):
-        responses = [
-            self.response({"ok": False, "error_code": 500}),
-            self.response({"ok": True}),
-        ]
+    def test_invalid_retry_after_uses_fallback_with_bounded_backoff(self):
+        parameters = (
+            {},
+            {"retry_after": -3},
+            {"retry_after": "3"},
+            {"retry_after": 3.5},
+            {"retry_after": True},
+            {"retry_after": False},
+            {"retry_after": None},
+        )
+        for value in parameters:
+            responses = [
+                self.rate_limit_error(value),
+                self.rate_limit_error(value),
+                self.response({"ok": True}),
+            ]
+            with (
+                self.subTest(parameters=value),
+                patch("monitor.urlopen", side_effect=responses) as opener,
+                patch("monitor.sleep") as pause,
+            ):
+                self.assert_message_delivered()
+                self.assertEqual(opener.call_count, 3)
+                self.assertEqual(
+                    [call.args[0] for call in pause.call_args_list], [1, 2]
+                )
+
+    def test_api_rate_limit_honors_retry_after(self):
+        for retry_after in (3, 30):
+            responses = [
+                self.response(
+                    {
+                        "ok": False,
+                        "error_code": 429,
+                        "parameters": {"retry_after": retry_after},
+                    }
+                ),
+                self.response({"ok": True}),
+            ]
+            with (
+                self.subTest(retry_after=retry_after),
+                patch("monitor.urlopen", side_effect=responses) as opener,
+                patch("monitor.sleep") as pause,
+            ):
+                self.assert_message_delivered()
+                self.assertEqual(opener.call_count, 2)
+                pause.assert_called_once_with(retry_after)
+
+    def test_api_long_rate_limit_defers_delivery_to_a_later_run(self):
+        body = {"ok": False, "error_code": 429, "parameters": {"retry_after": 31}}
         with (
-            patch("monitor.urlopen", side_effect=responses) as opener,
-            patch("monitor.sleep"),
+            patch(
+                "monitor.urlopen", side_effect=lambda *a, **kw: self.response(body)
+            ) as opener,
+            patch("monitor.sleep") as pause,
         ):
-            monitor.send_telegram(self.config, "Synthetic notification")
-            self.assertEqual(opener.call_count, 2)
+            with self.assertRaises(monitor.MonitorError):
+                monitor.send_telegram(self.config, "Synthetic notification")
+            opener.assert_called_once()
+            pause.assert_not_called()
+
+    def test_api_permanent_and_noninteger_errors_are_not_retried(self):
+        for code in (400, 403, "500", 500.0, True, None, [], {}):
+            body = {"ok": False, "error_code": code, "description": self.config.token}
+            with (
+                self.subTest(code=code),
+                patch(
+                    "monitor.urlopen", side_effect=lambda *a, **kw: self.response(body)
+                ) as opener,
+                patch("monitor.sleep") as pause,
+            ):
+                with self.assertRaisesRegex(
+                    monitor.MonitorError, "Telegram rejected"
+                ) as caught:
+                    monitor.send_telegram(self.config, "Synthetic notification")
+                self.assertNotIn(self.config.token, str(caught.exception))
+                opener.assert_called_once()
+                pause.assert_not_called()
+
+    def test_http_temporary_failure_is_retried(self):
+        for code in (408, 500, 503):
+            responses = [
+                HTTPError(self.url, code, "Temporary failure", Message(), BytesIO()),
+                self.response({"ok": True}),
+            ]
+            with (
+                self.subTest(code=code),
+                patch("monitor.urlopen", side_effect=responses) as opener,
+                patch("monitor.sleep") as pause,
+            ):
+                self.assert_message_delivered()
+                self.assertEqual(opener.call_count, 2)
+                pause.assert_called_once_with(1)
+
+    def test_api_level_temporary_failure_is_retried(self):
+        for code in (408, 500, 503):
+            responses = [
+                self.response({"ok": False, "error_code": code}),
+                self.response({"ok": True}),
+            ]
+            with (
+                self.subTest(code=code),
+                patch("monitor.urlopen", side_effect=responses) as opener,
+                patch("monitor.sleep") as pause,
+            ):
+                self.assert_message_delivered()
+                self.assertEqual(opener.call_count, 2)
+                pause.assert_called_once_with(1)
 
     def test_network_failure_stops_after_three_total_attempts(self):
         with (
