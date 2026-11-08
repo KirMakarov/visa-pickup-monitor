@@ -952,15 +952,17 @@ class TelegramTests(unittest.TestCase):
                 )
 
     def test_permanent_failure_is_not_retried_and_does_not_expose_token(self):
-        error = HTTPError(
-            self.url,
-            403,
-            "Forbidden",
-            Message(),
-            BytesIO(b'{"description":"123:test"}'),
-        )
+        def forbidden(*args, **kwargs):
+            raise HTTPError(
+                self.url,
+                403,
+                "Forbidden",
+                Message(),
+                BytesIO(b'{"description":"123:test"}'),
+            )
+
         with (
-            patch("monitor.urlopen", side_effect=error) as opener,
+            patch("monitor.urlopen", side_effect=forbidden) as opener,
             patch("monitor.sleep") as pause,
         ):
             with self.assertRaises(monitor.MonitorError) as caught:
