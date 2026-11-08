@@ -85,7 +85,7 @@ Run the same checks and tests as CI:
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-The checks cover Python linting, import sorting and formatting, complexity, YAML syntax, trailing whitespace, and file endings. Mypy checks the application and scripts in strict mode; tests are excluded. Ruff also requires return annotations for special methods in application code. Some pre-commit checks fix files automatically; review their changes and run the checks again. Three existing functions are exempt from the complexity limit of 10.
+The checks cover Python linting, import sorting and formatting, complexity, YAML syntax, Markdown style, trailing whitespace, and file endings. Markdown line length is not limited. Mypy checks the application and scripts in strict mode; tests are excluded. Ruff also requires return annotations for special methods in application code. Some pre-commit checks fix files automatically; review their changes and run the checks again. Three existing functions are exempt from the complexity limit of 10.
 
 Optionally install the Git hook to check staged files before each commit:
 
