@@ -972,18 +972,19 @@ class TelegramTests(unittest.TestCase):
             pause.assert_not_called()
 
     def test_rate_limit_honors_retry_after(self):
-        body = json.dumps({"parameters": {"retry_after": 3}}).encode()
-        responses = [
-            HTTPError(self.url, 429, "Rate limited", Message(), BytesIO(body)),
-            self.response({"ok": True}),
-        ]
-        with (
-            patch("monitor.urlopen", side_effect=responses) as opener,
-            patch("monitor.sleep") as pause,
-        ):
-            monitor.send_telegram(self.config, "Synthetic notification")
-            self.assertEqual(opener.call_count, 2)
-            pause.assert_called_once_with(3)
+        for retry_after, expected_delay in ((0, 1), (3, 3), (30, 30)):
+            responses = [
+                self.rate_limit_error({"retry_after": retry_after}),
+                self.response({"ok": True}),
+            ]
+            with (
+                self.subTest(retry_after=retry_after),
+                patch("monitor.urlopen", side_effect=responses) as opener,
+                patch("monitor.sleep") as pause,
+            ):
+                self.assert_message_delivered()
+                self.assertEqual(opener.call_count, 2)
+                pause.assert_called_once_with(expected_delay)
 
     def test_long_rate_limit_defers_delivery_to_a_later_run(self):
         body = json.dumps({"parameters": {"retry_after": 120}}).encode()
