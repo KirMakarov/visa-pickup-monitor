@@ -489,6 +489,30 @@ class ScriptTests(unittest.TestCase):
             sender.assert_called_once()
             self.assertIn("Application number", sender.call_args.args[1])
 
+    def test_unconfirmed_telegram_responses_leave_found_number_pending(self):
+        bodies = (b'{"ok":1}', b"not json", b"[]", b"\xff")
+        for index, body in enumerate(bodies):
+            with self.subTest(body=body):
+                self.state_path = Path(self.temp.name) / f"unconfirmed-{index}.json"
+                pdf = make_pdf("123456 01.01.2020 08:00-10:00")
+                self.assertEqual(
+                    self.run_script(self.responses(pdf), numbers="123456")[0], 0
+                )
+                # Up to three attempts for the match and three for its error alert.
+                responses = [
+                    Response(body, "https://api.telegram.org/") for _ in range(6)
+                ]
+                result, stdout, stderr = self.run_script(
+                    responses, numbers="123456", telegram=True
+                )
+                self.assertEqual(result, 1)
+                self.assertNotIn("Monitoring complete", stdout)
+                self.assertIn("Telegram", stderr)
+                saved = json.loads(self.state_path.read_text())
+                self.assertIn("123456", saved["found_numbers"])
+                self.assertEqual(saved["notified_numbers"], [])
+                self.assertEqual(saved["error_notifications"], [])
+
     def test_each_successful_delivery_survives_a_later_delivery_failure(self):
         pdf = make_pdf("123456 01.01.2020 08:00-10:00\n000123 01.01.2099 08:00-10:00")
         self.run_script(self.responses(pdf))
