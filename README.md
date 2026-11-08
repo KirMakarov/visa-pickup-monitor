@@ -1,15 +1,18 @@
 # visa-pickup-monitor
 
+[![CI](https://github.com/KirMakarov/visa-pickup-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/KirMakarov/visa-pickup-monitor/actions/workflows/ci.yml)
+[![Python 3.14](https://img.shields.io/badge/python-3.14-blue)](https://www.python.org/downloads/)
+
 Check application numbers in the German Embassy in Belgrade's current visa pickup PDF.
 
 Run a local check with persistent history and optional Telegram notifications. While numbers remain to be found, each run discovers the current PDF from the embassy page. Pickup dates do not affect matching. Read the linked PDF for pickup instructions.
 
 ## Run locally
 
-Use Python 3.10 or newer. From the project directory, create a virtual environment and install the dependencies (`pypdf`, `python-dotenv`, and `tzdata`):
+Use Python 3.14 or newer. From the project directory, create a virtual environment with Python 3.14 and install the dependencies (`pypdf`, `python-dotenv`, and `tzdata`):
 
 ```sh
-python3 -m venv .venv
+python3.14 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 cp .env.example .env
 ```
