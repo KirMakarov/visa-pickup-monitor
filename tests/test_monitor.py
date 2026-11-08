@@ -3,6 +3,7 @@ import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
+from email.message import Message
 from io import BytesIO, StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -80,16 +81,18 @@ class ConfigTests(unittest.TestCase):
 
     def test_optional_telegram_requires_both_settings(self):
         self.assertIsNone(monitor.load_telegram({}))
-        for settings in (
+        invalid_settings: tuple[dict[str, str | None], ...] = (
             {"TELEGRAM_BOT_TOKEN": "123:test"},
             {"TELEGRAM_CHAT_ID": "456"},
             {"TELEGRAM_BOT_TOKEN": "invalid", "TELEGRAM_CHAT_ID": "456"},
-        ):
+        )
+        for settings in invalid_settings:
             with self.subTest(settings=settings), self.assertRaises(monitor.MonitorError):
                 monitor.load_telegram(settings)
         config = monitor.load_telegram({
             "TELEGRAM_BOT_TOKEN": "123:test", "TELEGRAM_CHAT_ID": "456",
         })
+        assert config is not None
         self.assertEqual(config.chat_id, "456")
         self.assertNotIn("123:test", repr(config))
 
@@ -243,7 +246,7 @@ class ScriptTests(unittest.TestCase):
     def test_download_failures_return_error_without_false_absence_results(self):
         failures = (
             lambda: URLError("offline"),
-            lambda: HTTPError("https://embassy.example/start", 503, "Unavailable", {}, None),
+            lambda: HTTPError("https://embassy.example/start", 503, "Unavailable", Message(), None),
             lambda: TimeoutError("timed out"),
         )
         for index, failure in enumerate(failures):
@@ -558,7 +561,7 @@ class TelegramTests(unittest.TestCase):
             self.assertEqual(json.loads(request.data), {"chat_id": "456", "text": "Synthetic notification"})
 
     def test_permanent_failure_is_not_retried_and_does_not_expose_token(self):
-        error = HTTPError(self.url, 403, "Forbidden", {}, BytesIO(b'{"description":"123:test"}'))
+        error = HTTPError(self.url, 403, "Forbidden", Message(), BytesIO(b'{"description":"123:test"}'))
         with patch("monitor.urlopen", side_effect=error) as opener, patch("monitor.sleep") as pause:
             with self.assertRaises(monitor.MonitorError) as caught:
                 monitor.send_telegram(self.config, "Synthetic notification")
@@ -568,7 +571,7 @@ class TelegramTests(unittest.TestCase):
 
     def test_rate_limit_honors_retry_after(self):
         body = json.dumps({"parameters": {"retry_after": 3}}).encode()
-        responses = [HTTPError(self.url, 429, "Rate limited", {}, BytesIO(body)), self.response({"ok": True})]
+        responses = [HTTPError(self.url, 429, "Rate limited", Message(), BytesIO(body)), self.response({"ok": True})]
         with patch("monitor.urlopen", side_effect=responses) as opener, patch("monitor.sleep") as pause:
             monitor.send_telegram(self.config, "Synthetic notification")
             self.assertEqual(opener.call_count, 2)
@@ -576,7 +579,7 @@ class TelegramTests(unittest.TestCase):
 
     def test_long_rate_limit_defers_delivery_to_a_later_run(self):
         body = json.dumps({"parameters": {"retry_after": 120}}).encode()
-        error = HTTPError(self.url, 429, "Rate limited", {}, BytesIO(body))
+        error = HTTPError(self.url, 429, "Rate limited", Message(), BytesIO(body))
         with patch("monitor.urlopen", side_effect=error) as opener, patch("monitor.sleep") as pause:
             with self.assertRaises(monitor.MonitorError):
                 monitor.send_telegram(self.config, "Synthetic notification")
