@@ -987,16 +987,20 @@ class TelegramTests(unittest.TestCase):
                 pause.assert_called_once_with(expected_delay)
 
     def test_long_rate_limit_defers_delivery_to_a_later_run(self):
-        body = json.dumps({"parameters": {"retry_after": 120}}).encode()
-        error = HTTPError(self.url, 429, "Rate limited", Message(), BytesIO(body))
-        with (
-            patch("monitor.urlopen", side_effect=error) as opener,
-            patch("monitor.sleep") as pause,
-        ):
-            with self.assertRaises(monitor.MonitorError):
-                monitor.send_telegram(self.config, "Synthetic notification")
-            opener.assert_called_once()
-            pause.assert_not_called()
+        for retry_after in (31, 120):
+
+            def rate_limited(*args, **kwargs):
+                raise self.rate_limit_error({"retry_after": retry_after})
+
+            with (
+                self.subTest(retry_after=retry_after),
+                patch("monitor.urlopen", side_effect=rate_limited) as opener,
+                patch("monitor.sleep") as pause,
+            ):
+                with self.assertRaises(monitor.MonitorError):
+                    monitor.send_telegram(self.config, "Synthetic notification")
+                opener.assert_called_once()
+                pause.assert_not_called()
 
     def test_api_level_temporary_failure_is_retried(self):
         responses = [
