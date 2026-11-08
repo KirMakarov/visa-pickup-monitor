@@ -1,15 +1,18 @@
 # visa-pickup-monitor
 
+[![CI](https://github.com/KirMakarov/visa-pickup-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/KirMakarov/visa-pickup-monitor/actions/workflows/ci.yml)
+[![Python 3.14](https://img.shields.io/badge/python-3.14-blue)](https://www.python.org/downloads/)
+
 Check application numbers in the German Embassy in Belgrade's current visa pickup PDF.
 
 Run a local check with persistent history and optional Telegram notifications. While numbers remain to be found, each run discovers the current PDF from the embassy page. Pickup dates do not affect matching. Read the linked PDF for pickup instructions.
 
 ## Run locally
 
-Use Python 3.10 or newer. From the project directory, create a virtual environment and install the dependencies (`pypdf`, `python-dotenv`, and `tzdata`):
+Use Python 3.14 or newer. From the project directory, create a virtual environment with Python 3.14 and install the dependencies (`pypdf`, `python-dotenv`, and `tzdata`):
 
 ```sh
-python3 -m venv .venv
+python3.14 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 cp .env.example .env
 ```
@@ -67,8 +70,29 @@ All scheduled checks behave alike. The runner can optionally signal scheduled ou
 
 ## Verify
 
+Install the development tools in the same Python 3.14 virtual environment:
+
 ```sh
+. .venv/bin/activate
+.venv/bin/python -m pip install -r requirements-dev.txt
+```
+
+Run the same checks and tests as CI:
+
+```sh
+.venv/bin/pre-commit run --all-files --show-diff-on-failure
+.venv/bin/python -m mypy
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Tests run offline with synthetic data and generated PDFs. The real embassy PDF is checked separately and is not stored in this repository.
+The checks cover Python linting, import sorting and formatting, complexity, YAML syntax, Markdown style, trailing whitespace, and file endings. Markdown line length is not limited. Mypy checks the application and scripts in strict mode; tests are excluded. Ruff also requires return annotations for special methods in application code. Some pre-commit checks fix files automatically; review their changes and run the checks again. Three existing functions are exempt from the complexity limit of 10.
+
+Optionally install the Git hook to check staged files before each commit:
+
+```sh
+.venv/bin/pre-commit install
+```
+
+The first run downloads the pinned hook versions. Activate the virtual environment before running pre-commit or committing, so the mypy hook uses the installed project dependencies. Mypy checks all application code even when only some files are staged. Tests are not run by the hook; they run separately and in CI. Tests run offline with synthetic data and generated PDFs. The real embassy PDF is checked separately and is not stored in this repository.
+
+On Windows, activate the virtual environment with `.venv\Scripts\Activate.ps1` in PowerShell and use `.venv\Scripts\pre-commit.exe` for the pre-commit commands above.

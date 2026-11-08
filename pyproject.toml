@@ -1,0 +1,17 @@
+[tool.ruff]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "C901", "ANN204"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN204"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+files = ["."]
+exclude = ["^tests/"]
