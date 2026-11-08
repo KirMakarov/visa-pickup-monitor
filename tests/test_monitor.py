@@ -21,14 +21,18 @@ def make_pdf(*pages: str) -> bytes:
     writer = PdfWriter()
     for text in pages:
         page = writer.add_blank_page(width=612, height=792)
-        font = DictionaryObject({
-            NameObject("/Type"): NameObject("/Font"),
-            NameObject("/Subtype"): NameObject("/Type1"),
-            NameObject("/BaseFont"): NameObject("/Helvetica"),
-        })
-        page[NameObject("/Resources")] = DictionaryObject({
-            NameObject("/Font"): DictionaryObject({NameObject("/F1"): font}),
-        })
+        font = DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type1"),
+                NameObject("/BaseFont"): NameObject("/Helvetica"),
+            }
+        )
+        page[NameObject("/Resources")] = DictionaryObject(
+            {
+                NameObject("/Font"): DictionaryObject({NameObject("/F1"): font}),
+            }
+        )
         commands = ["BT /F1 10 Tf 40 750 Td 12 TL"]
         for line in text.splitlines():
             escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
@@ -51,7 +55,9 @@ class ConfigTests(unittest.TestCase):
     def test_dotenv_preserves_leading_zeros_and_deduplicates(self):
         self.env_path.write_text('NUMBERS="000123, 123456,000123"\n', encoding="utf-8")
         with patch.dict(os.environ, {}, clear=True):
-            page_url, numbers = monitor.load_config(monitor.read_settings(self.env_path))
+            page_url, numbers = monitor.load_config(
+                monitor.read_settings(self.env_path)
+            )
         self.assertEqual(page_url, monitor.DEFAULT_PAGE_URL)
         self.assertEqual(numbers, ("000123", "123456"))
 
@@ -68,12 +74,19 @@ class ConfigTests(unittest.TestCase):
 
     def test_missing_or_invalid_numbers_are_configuration_errors(self):
         for value in ("", "12345", "1234567", "abc123", "123456,", "１２３４５６"):
-            with self.subTest(value=value), patch.dict(os.environ, {"NUMBERS": value}, clear=True):
+            with (
+                self.subTest(value=value),
+                patch.dict(os.environ, {"NUMBERS": value}, clear=True),
+            ):
                 with self.assertRaisesRegex(monitor.MonitorError, "NUMBERS"):
                     monitor.load_config(monitor.read_settings(self.env_path))
 
     def test_invalid_source_urls_are_configuration_errors(self):
-        for url in ("file:///tmp/page.html", "embassy.example/page", "https://[invalid"):
+        for url in (
+            "file:///tmp/page.html",
+            "embassy.example/page",
+            "https://[invalid",
+        ):
             settings = {"NUMBERS": "123456", "PAGE_URL": url}
             with self.subTest(url=url), patch.dict(os.environ, settings, clear=True):
                 with self.assertRaisesRegex(monitor.MonitorError, "PAGE_URL"):
@@ -87,11 +100,17 @@ class ConfigTests(unittest.TestCase):
             {"TELEGRAM_BOT_TOKEN": "invalid", "TELEGRAM_CHAT_ID": "456"},
         )
         for settings in invalid_settings:
-            with self.subTest(settings=settings), self.assertRaises(monitor.MonitorError):
+            with (
+                self.subTest(settings=settings),
+                self.assertRaises(monitor.MonitorError),
+            ):
                 monitor.load_telegram(settings)
-        config = monitor.load_telegram({
-            "TELEGRAM_BOT_TOKEN": "123:test", "TELEGRAM_CHAT_ID": "456",
-        })
+        config = monitor.load_telegram(
+            {
+                "TELEGRAM_BOT_TOKEN": "123:test",
+                "TELEGRAM_CHAT_ID": "456",
+            }
+        )
         assert config is not None
         self.assertEqual(config.chat_id, "456")
         self.assertNotIn("123:test", repr(config))
@@ -99,13 +118,13 @@ class ConfigTests(unittest.TestCase):
 
 class LinkTests(unittest.TestCase):
     def test_resolves_named_relative_pdf_and_ignores_unrelated_documents(self):
-        html = '''
+        html = """
             <a href="authorization.pdf">Authorization</a>
             <a href="../files/current.pdf?download=1#page=2">
                 <span>Abholliste/ Lista za preuzimanje viza</span> PDF
             </a>
             <a href="../files/current.pdf?download=1">Abholliste</a>
-        '''
+        """
         self.assertEqual(
             monitor.resolve_pdf_url(html, "https://embassy.example/service/pickup"),
             "https://embassy.example/files/current.pdf?download=1",
@@ -149,10 +168,7 @@ class EntryTests(unittest.TestCase):
         self.assertEqual(monitor.parse_numbers(text), {"654321"})
 
     def test_invalid_dates_and_times_do_not_form_valid_entries(self):
-        text = (
-            "123456 31.02.2026 08:00-10:00\n"
-            "123456 10.11.2026 25:00-26:00\n"
-        )
+        text = "123456 31.02.2026 08:00-10:00\n123456 10.11.2026 25:00-26:00\n"
         self.assertEqual(monitor.parse_numbers(text), set())
 
     def test_extracts_all_pages_from_a_real_pdf_structure(self):
@@ -168,8 +184,9 @@ class EntryTests(unittest.TestCase):
 
     def test_empty_or_unrecognized_pdf_is_a_processing_error(self):
         for pdf in (make_pdf(), make_pdf("Application 123456, no pickup date or time")):
-            with self.subTest(size=len(pdf)), self.assertRaisesRegex(
-                monitor.MonitorError, "no valid pickup entries"
+            with (
+                self.subTest(size=len(pdf)),
+                self.assertRaisesRegex(monitor.MonitorError, "no valid pickup entries"),
             ):
                 monitor.extract_numbers(pdf)
 
@@ -190,8 +207,13 @@ class ScriptTests(unittest.TestCase):
         self.state_path = Path(self.temp.name) / "data" / "state.json"
 
     def run_script(
-        self, responses, numbers="123456,000123", telegram=False,
-        today="2026-11-05", chat_id="456", requests=None,
+        self,
+        responses,
+        numbers="123456,000123",
+        telegram=False,
+        today="2026-11-05",
+        chat_id="456",
+        requests=None,
     ):
         stdout, stderr = StringIO(), StringIO()
         settings = {"PAGE_URL": "https://embassy.example/start", "NUMBERS": numbers}
@@ -246,7 +268,9 @@ class ScriptTests(unittest.TestCase):
     def test_download_failures_return_error_without_false_absence_results(self):
         failures = (
             lambda: URLError("offline"),
-            lambda: HTTPError("https://embassy.example/start", 503, "Unavailable", Message(), None),
+            lambda: HTTPError(
+                "https://embassy.example/start", 503, "Unavailable", Message(), None
+            ),
             lambda: TimeoutError("timed out"),
         )
         for index, failure in enumerate(failures):
@@ -258,7 +282,9 @@ class ScriptTests(unittest.TestCase):
                 self.assertNotIn("Traceback", stderr)
 
     def test_unrecognized_pdf_returns_error_without_false_absence_results(self):
-        result, stdout, stderr = self.run_script(self.responses(make_pdf("No pickup entries")))
+        result, stdout, stderr = self.run_script(
+            self.responses(make_pdf("No pickup entries"))
+        )
         self.assertEqual(result, 1)
         self.assertEqual(stdout, "")
         self.assertIn("no valid pickup entries", stderr)
@@ -278,16 +304,25 @@ class ScriptTests(unittest.TestCase):
     def test_new_pdf_url_is_processed_on_the_same_day(self):
         self.run_script(self.responses(make_pdf("123456 01.01.2020 08:00-10:00")))
         responses = [
-            Response(b'<a href="new.pdf">Abholliste</a>', "https://embassy.example/service/"),
-            Response(make_pdf("000123 01.01.2099 08:00-10:00"), "https://embassy.example/new.pdf"),
+            Response(
+                b'<a href="new.pdf">Abholliste</a>', "https://embassy.example/service/"
+            ),
+            Response(
+                make_pdf("000123 01.01.2099 08:00-10:00"),
+                "https://embassy.example/new.pdf",
+            ),
         ]
         result, stdout, _ = self.run_script(responses)
         self.assertEqual(result, 0)
         self.assertIn("000123: found", stdout)
-        self.assertEqual(set(monitor.load_state(self.state_path).found_numbers), {"123456", "000123"})
+        self.assertEqual(
+            set(monitor.load_state(self.state_path).found_numbers), {"123456", "000123"}
+        )
 
     def test_completed_monitoring_makes_no_network_requests(self):
-        self.run_script(self.responses(make_pdf("123456 01.01.2020 08:00-10:00")), numbers="123456")
+        self.run_script(
+            self.responses(make_pdf("123456 01.01.2020 08:00-10:00")), numbers="123456"
+        )
         result, stdout, _ = self.run_script([], numbers="123456")
         self.assertEqual(result, 0)
         self.assertIn("Monitoring complete", stdout)
@@ -299,25 +334,36 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("000123: found", stdout)
         self.assertNotIn("123456: found", stdout)
-        self.assertEqual(set(monitor.load_state(self.state_path).found_numbers), {"123456", "000123"})
+        self.assertEqual(
+            set(monitor.load_state(self.state_path).found_numbers), {"123456", "000123"}
+        )
 
     def test_removed_target_is_ignored_and_history_survives_readding(self):
         self.run_script(self.responses(make_pdf("123456 01.01.2020 08:00-10:00")))
         self.assertEqual(self.run_script([], numbers="123456")[0], 0)
         self.run_script(
-            self.responses(make_pdf("000123 01.01.2099 08:00-10:00")), today="2026-11-06"
+            self.responses(make_pdf("000123 01.01.2099 08:00-10:00")),
+            today="2026-11-06",
         )
         result, stdout, _ = self.run_script([], numbers="123456")
         self.assertEqual(result, 0)
         self.assertIn("Monitoring complete", stdout)
-        self.assertEqual(set(monitor.load_state(self.state_path).found_numbers), {"123456", "000123"})
+        self.assertEqual(
+            set(monitor.load_state(self.state_path).found_numbers), {"123456", "000123"}
+        )
 
     def test_failed_processing_is_retried_with_the_same_url_today(self):
-        self.assertEqual(self.run_script(self.responses(make_pdf("Unrecognized table")))[0], 1)
+        self.assertEqual(
+            self.run_script(self.responses(make_pdf("Unrecognized table")))[0], 1
+        )
         self.assertIsNone(monitor.load_state(self.state_path).last_processed_date)
-        result, _, _ = self.run_script(self.responses(make_pdf("123456 01.01.2020 08:00-10:00")))
+        result, _, _ = self.run_script(
+            self.responses(make_pdf("123456 01.01.2020 08:00-10:00"))
+        )
         self.assertEqual(result, 0)
-        self.assertEqual(monitor.load_state(self.state_path).last_processed_date, "2026-11-05")
+        self.assertEqual(
+            monitor.load_state(self.state_path).last_processed_date, "2026-11-05"
+        )
 
     def test_enabling_telegram_delivers_only_current_unnotified_targets(self):
         pdf = make_pdf("123456 01.01.2020 08:00-10:00\n000123 01.01.2099 08:00-10:00")
@@ -326,25 +372,48 @@ class ScriptTests(unittest.TestCase):
             self.assertEqual(self.run_script([], numbers="123456", telegram=True)[0], 0)
             sender.assert_called_once()
             self.assertIn("Application number 123456", sender.call_args.args[1])
-            self.assertIn("https://embassy.example/service/current.pdf", sender.call_args.args[1])
+            self.assertIn(
+                "https://embassy.example/service/current.pdf", sender.call_args.args[1]
+            )
         with patch("monitor.send_telegram") as sender:
-            self.assertEqual(self.run_script([], numbers="123456", telegram=True, chat_id="789")[0], 0)
+            self.assertEqual(
+                self.run_script([], numbers="123456", telegram=True, chat_id="789")[0],
+                0,
+            )
             sender.assert_not_called()
-        self.assertEqual(monitor.load_state(self.state_path).notified_numbers, ["123456"])
+        self.assertEqual(
+            monitor.load_state(self.state_path).notified_numbers, ["123456"]
+        )
 
     def test_complete_check_delivers_and_records_a_confirmed_telegram_response(self):
         responses = self.responses(make_pdf("123456 01.01.2020 08:00-10:00"))
-        responses.append(Response(b'{"ok":true,"result":{"message_id":1}}', "https://api.telegram.org/"))
-        result, stdout, stderr = self.run_script(responses, numbers="123456", telegram=True)
+        responses.append(
+            Response(
+                b'{"ok":true,"result":{"message_id":1}}', "https://api.telegram.org/"
+            )
+        )
+        result, stdout, stderr = self.run_script(
+            responses, numbers="123456", telegram=True
+        )
         self.assertEqual(result, 0)
         self.assertEqual(stderr, "")
         self.assertIn("Monitoring complete", stdout)
-        self.assertEqual(monitor.load_state(self.state_path).notified_numbers, ["123456"])
+        self.assertEqual(
+            monitor.load_state(self.state_path).notified_numbers, ["123456"]
+        )
 
     def test_unsent_matches_remain_pending_without_a_stale_error_queue(self):
         pdf = make_pdf("123456 01.01.2020 08:00-10:00")
-        with patch("monitor.send_telegram", side_effect=monitor.MonitorError("Telegram unavailable")):
-            self.assertEqual(self.run_script(self.responses(pdf), numbers="123456", telegram=True)[0], 1)
+        with patch(
+            "monitor.send_telegram",
+            side_effect=monitor.MonitorError("Telegram unavailable"),
+        ):
+            self.assertEqual(
+                self.run_script(self.responses(pdf), numbers="123456", telegram=True)[
+                    0
+                ],
+                1,
+            )
         state = monitor.load_state(self.state_path)
         self.assertIn("123456", state.found_numbers)
         self.assertEqual(state.notified_numbers, [])
@@ -357,9 +426,14 @@ class ScriptTests(unittest.TestCase):
     def test_each_successful_delivery_survives_a_later_delivery_failure(self):
         pdf = make_pdf("123456 01.01.2020 08:00-10:00\n000123 01.01.2099 08:00-10:00")
         self.run_script(self.responses(pdf))
-        with patch("monitor.send_telegram", side_effect=[None, monitor.MonitorError("Send failed"), None]):
+        with patch(
+            "monitor.send_telegram",
+            side_effect=[None, monitor.MonitorError("Send failed"), None],
+        ):
             self.assertEqual(self.run_script([], telegram=True)[0], 1)
-        self.assertEqual(monitor.load_state(self.state_path).notified_numbers, ["123456"])
+        self.assertEqual(
+            monitor.load_state(self.state_path).notified_numbers, ["123456"]
+        )
         with patch("monitor.send_telegram") as sender:
             self.assertEqual(self.run_script([], telegram=True)[0], 0)
             sender.assert_called_once()
@@ -369,17 +443,23 @@ class ScriptTests(unittest.TestCase):
     def test_pending_delivery_is_attempted_even_if_the_source_page_fails(self):
         self.run_script(self.responses(make_pdf("123456 01.01.2020 08:00-10:00")))
         with patch("monitor.send_telegram") as sender:
-            result, _, _ = self.run_script([URLError("offline") for _ in range(3)], telegram=True)
+            result, _, _ = self.run_script(
+                [URLError("offline") for _ in range(3)], telegram=True
+            )
             self.assertEqual(result, 1)
             texts = [call.args[1] for call in sender.call_args_list]
             self.assertTrue(any("Application number 123456" in text for text in texts))
             self.assertTrue(any("Monitor error" in text for text in texts))
-        self.assertEqual(monitor.load_state(self.state_path).notified_numbers, ["123456"])
+        self.assertEqual(
+            monitor.load_state(self.state_path).notified_numbers, ["123456"]
+        )
 
     def test_error_alert_is_once_per_episode_and_success_silently_resets_it(self):
         for expected_calls in (1, 0):
             with patch("monitor.send_telegram") as sender:
-                result, _, _ = self.run_script([URLError("offline") for _ in range(3)], telegram=True)
+                result, _, _ = self.run_script(
+                    [URLError("offline") for _ in range(3)], telegram=True
+                )
                 self.assertEqual(result, 1)
                 self.assertEqual(sender.call_count, expected_calls)
         with patch("monitor.send_telegram") as sender:
@@ -389,12 +469,25 @@ class ScriptTests(unittest.TestCase):
             self.assertEqual(result, 0)
             sender.assert_not_called()
         with patch("monitor.send_telegram") as sender:
-            self.assertEqual(self.run_script([URLError("offline") for _ in range(3)], telegram=True)[0], 1)
+            self.assertEqual(
+                self.run_script([URLError("offline") for _ in range(3)], telegram=True)[
+                    0
+                ],
+                1,
+            )
             sender.assert_called_once()
 
     def test_failed_error_alert_is_not_recorded_or_replayed_after_recovery(self):
-        with patch("monitor.send_telegram", side_effect=monitor.MonitorError("Telegram unavailable")):
-            self.assertEqual(self.run_script([URLError("offline") for _ in range(3)], telegram=True)[0], 1)
+        with patch(
+            "monitor.send_telegram",
+            side_effect=monitor.MonitorError("Telegram unavailable"),
+        ):
+            self.assertEqual(
+                self.run_script([URLError("offline") for _ in range(3)], telegram=True)[
+                    0
+                ],
+                1,
+            )
         self.assertEqual(monitor.load_state(self.state_path).error_notifications, [])
         with patch("monitor.send_telegram") as sender:
             result, _, _ = self.run_script(
@@ -405,7 +498,10 @@ class ScriptTests(unittest.TestCase):
 
     def test_state_save_failure_prevents_match_delivery_and_reports_the_error(self):
         with (
-            patch("monitor.save_state", side_effect=monitor.MonitorError("Could not save data/state.json.")),
+            patch(
+                "monitor.save_state",
+                side_effect=monitor.MonitorError("Could not save data/state.json."),
+            ),
             patch("monitor.send_telegram") as sender,
         ):
             result, _, _ = self.run_script(
@@ -429,28 +525,49 @@ class ScriptTests(unittest.TestCase):
     def test_legacy_state_preserves_history_suppression_and_cache(self):
         for version in (1, 2):
             with self.subTest(version=version):
-                legacy = monitor.asdict(monitor.State(
-                    last_pdf_url="https://embassy.example/service/current.pdf",
-                    last_processed_date="2026-11-05", last_targets=["123456", "000123"],
-                    found_numbers={"123456": "https://embassy.example/discovery.pdf"},
-                    notified_numbers=["123456"], error_notifications=["Could not download the source page; check the connection and URL."],
-                ))
+                legacy = monitor.asdict(
+                    monitor.State(
+                        last_pdf_url="https://embassy.example/service/current.pdf",
+                        last_processed_date="2026-11-05",
+                        last_targets=["123456", "000123"],
+                        found_numbers={
+                            "123456": "https://embassy.example/discovery.pdf"
+                        },
+                        notified_numbers=["123456"],
+                        error_notifications=[
+                            "Could not download the source page; check the connection and URL."
+                        ],
+                    )
+                )
                 if version == 2:
-                    legacy["daily"] = {"date": "2026-11-05", "successful": 2, "failed": 1,
-                                       "pdf_downloaded": True, "errors": [], "report_delivered": False}
+                    legacy["daily"] = {
+                        "date": "2026-11-05",
+                        "successful": 2,
+                        "failed": 1,
+                        "pdf_downloaded": True,
+                        "errors": [],
+                        "report_delivered": False,
+                    }
                 self.state_path.parent.mkdir(parents=True, exist_ok=True)
                 self.state_path.write_text(json.dumps({"version": version, **legacy}))
                 with patch("monitor.send_telegram") as sender:
-                    result, _, _ = self.run_script([URLError("offline")] * 3, telegram=True)
+                    result, _, _ = self.run_script(
+                        [URLError("offline")] * 3, telegram=True
+                    )
                     self.assertEqual(result, 1)
                     sender.assert_not_called()
                 with patch("monitor.send_telegram") as sender:
-                    result, output, _ = self.run_script([self.responses(b"")[0]], telegram=True)
+                    result, output, _ = self.run_script(
+                        [self.responses(b"")[0]], telegram=True
+                    )
                     self.assertEqual(result, 0)
                     self.assertIn("already processed", output)
                     sender.assert_not_called()
                 state = monitor.load_state(self.state_path)
-                self.assertEqual(state.found_numbers["123456"], "https://embassy.example/discovery.pdf")
+                self.assertEqual(
+                    state.found_numbers["123456"],
+                    "https://embassy.example/discovery.pdf",
+                )
                 self.assertEqual(state.notified_numbers, ["123456"])
                 self.assertEqual(state.error_notifications, [])
                 saved = json.loads(self.state_path.read_text())
@@ -458,8 +575,12 @@ class ScriptTests(unittest.TestCase):
                 self.assertNotIn("daily", saved)
 
     def test_completed_legacy_state_is_upgraded_without_requests(self):
-        state = monitor.asdict(monitor.State(found_numbers={"123456": "https://embassy.example/list.pdf"},
-                                            notified_numbers=["123456"]))
+        state = monitor.asdict(
+            monitor.State(
+                found_numbers={"123456": "https://embassy.example/list.pdf"},
+                notified_numbers=["123456"],
+            )
+        )
         state["daily"] = None
         self.state_path.parent.mkdir(parents=True)
         self.state_path.write_text(json.dumps({"version": 2, **state}))
@@ -472,7 +593,11 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(saved["notified_numbers"], ["123456"])
 
     def test_corrupt_reporting_state_is_not_overwritten(self):
-        state = {"version": 2, **monitor.asdict(monitor.State()), "daily": {"date": "bad"}}
+        state = {
+            "version": 2,
+            **monitor.asdict(monitor.State()),
+            "daily": {"date": "bad"},
+        }
         self.state_path.parent.mkdir(parents=True)
         original = json.dumps(state)
         self.state_path.write_text(original)
@@ -482,23 +607,41 @@ class ScriptTests(unittest.TestCase):
     def test_multiple_findings_and_quiet_checks_across_day_boundary(self):
         targets = "123456,000123,999999"
         pdf = make_pdf("123456 01.01.2020 08:00-10:00\n000123 01.01.2099 08:00-10:00")
-        ok = lambda: Response(b'{"ok":true}', "https://api.telegram.org/")
+
+        def ok():
+            return Response(b'{"ok":true}', "https://api.telegram.org/")
+
         requests = []
         result, output, _ = self.run_script(
-            self.responses(pdf) + [ok(), ok()], numbers=targets, telegram=True, requests=requests
+            self.responses(pdf) + [ok(), ok()],
+            numbers=targets,
+            telegram=True,
+            requests=requests,
         )
         self.assertEqual(result, 0)
-        messages = [json.loads(request.data)["text"] for request in requests if request.data]
-        self.assertEqual(messages, [
-            "Application number 123456 found in the pickup list.\nPDF: https://embassy.example/service/current.pdf",
-            "Application number 000123 found in the pickup list.\nPDF: https://embassy.example/service/current.pdf",
-        ])
+        messages = [
+            json.loads(request.data)["text"] for request in requests if request.data
+        ]
+        self.assertEqual(
+            messages,
+            [
+                "Application number 123456 found in the pickup list.\nPDF: https://embassy.example/service/current.pdf",
+                "Application number 000123 found in the pickup list.\nPDF: https://embassy.example/service/current.pdf",
+            ],
+        )
         self.assertNotIn("daily report", output.lower())
-        for today, responses in (("2026-11-05", [self.responses(pdf)[0]]),
-                                 ("2026-11-06", self.responses(pdf))):
+        for today, responses in (
+            ("2026-11-05", [self.responses(pdf)[0]]),
+            ("2026-11-06", self.responses(pdf)),
+        ):
             requests = []
-            result, output, _ = self.run_script(responses, numbers=targets, telegram=True,
-                                                 today=today, requests=requests)
+            result, output, _ = self.run_script(
+                responses,
+                numbers=targets,
+                telegram=True,
+                today=today,
+                requests=requests,
+            )
             self.assertEqual(result, 0)
             self.assertFalse(any(request.data for request in requests))
             self.assertNotIn("daily report", output.lower())
@@ -508,7 +651,9 @@ class StateTests(unittest.TestCase):
     def test_atomic_save_failure_keeps_previous_state_and_removes_temporary_file(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
-            state = monitor.State(found_numbers={"123456": "https://embassy.example/current.pdf"})
+            state = monitor.State(
+                found_numbers={"123456": "https://embassy.example/current.pdf"}
+            )
             monitor.save_state(state, path)
             previous = path.read_bytes()
             state.notified_numbers.append("123456")
@@ -521,7 +666,10 @@ class StateTests(unittest.TestCase):
     def test_invalid_state_schemas_are_rejected(self):
         baseline = {"version": 3, **monitor.asdict(monitor.State())}
         examples = (
-            [], {}, {**baseline, "version": 4}, {**baseline, "version": True},
+            [],
+            {},
+            {**baseline, "version": 4},
+            {**baseline, "version": True},
             {**baseline, "notified_numbers": ["123456"]},
             {**baseline, "found_numbers": ["123456"]},
             {**baseline, "found_numbers": {"123456": None}},
@@ -554,15 +702,29 @@ class TelegramTests(unittest.TestCase):
         return Response(json.dumps(body).encode("utf-8"), self.url)
 
     def test_send_posts_json_and_accepts_confirmed_success(self):
-        with patch("monitor.urlopen", return_value=self.response({"ok": True})) as opener:
+        with patch(
+            "monitor.urlopen", return_value=self.response({"ok": True})
+        ) as opener:
             monitor.send_telegram(self.config, "Synthetic notification")
             request = opener.call_args.args[0]
             self.assertEqual(request.get_method(), "POST")
-            self.assertEqual(json.loads(request.data), {"chat_id": "456", "text": "Synthetic notification"})
+            self.assertEqual(
+                json.loads(request.data),
+                {"chat_id": "456", "text": "Synthetic notification"},
+            )
 
     def test_permanent_failure_is_not_retried_and_does_not_expose_token(self):
-        error = HTTPError(self.url, 403, "Forbidden", Message(), BytesIO(b'{"description":"123:test"}'))
-        with patch("monitor.urlopen", side_effect=error) as opener, patch("monitor.sleep") as pause:
+        error = HTTPError(
+            self.url,
+            403,
+            "Forbidden",
+            Message(),
+            BytesIO(b'{"description":"123:test"}'),
+        )
+        with (
+            patch("monitor.urlopen", side_effect=error) as opener,
+            patch("monitor.sleep") as pause,
+        ):
             with self.assertRaises(monitor.MonitorError) as caught:
                 monitor.send_telegram(self.config, "Synthetic notification")
             self.assertNotIn(self.config.token, str(caught.exception))
@@ -571,8 +733,14 @@ class TelegramTests(unittest.TestCase):
 
     def test_rate_limit_honors_retry_after(self):
         body = json.dumps({"parameters": {"retry_after": 3}}).encode()
-        responses = [HTTPError(self.url, 429, "Rate limited", Message(), BytesIO(body)), self.response({"ok": True})]
-        with patch("monitor.urlopen", side_effect=responses) as opener, patch("monitor.sleep") as pause:
+        responses = [
+            HTTPError(self.url, 429, "Rate limited", Message(), BytesIO(body)),
+            self.response({"ok": True}),
+        ]
+        with (
+            patch("monitor.urlopen", side_effect=responses) as opener,
+            patch("monitor.sleep") as pause,
+        ):
             monitor.send_telegram(self.config, "Synthetic notification")
             self.assertEqual(opener.call_count, 2)
             pause.assert_called_once_with(3)
@@ -580,15 +748,24 @@ class TelegramTests(unittest.TestCase):
     def test_long_rate_limit_defers_delivery_to_a_later_run(self):
         body = json.dumps({"parameters": {"retry_after": 120}}).encode()
         error = HTTPError(self.url, 429, "Rate limited", Message(), BytesIO(body))
-        with patch("monitor.urlopen", side_effect=error) as opener, patch("monitor.sleep") as pause:
+        with (
+            patch("monitor.urlopen", side_effect=error) as opener,
+            patch("monitor.sleep") as pause,
+        ):
             with self.assertRaises(monitor.MonitorError):
                 monitor.send_telegram(self.config, "Synthetic notification")
             opener.assert_called_once()
             pause.assert_not_called()
 
     def test_api_level_temporary_failure_is_retried(self):
-        responses = [self.response({"ok": False, "error_code": 500}), self.response({"ok": True})]
-        with patch("monitor.urlopen", side_effect=responses) as opener, patch("monitor.sleep"):
+        responses = [
+            self.response({"ok": False, "error_code": 500}),
+            self.response({"ok": True}),
+        ]
+        with (
+            patch("monitor.urlopen", side_effect=responses) as opener,
+            patch("monitor.sleep"),
+        ):
             monitor.send_telegram(self.config, "Synthetic notification")
             self.assertEqual(opener.call_count, 2)
 

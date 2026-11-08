@@ -1,7 +1,7 @@
 """Check the German Embassy in Belgrade's current visa pickup list once."""
 
-import json
 import argparse
+import json
 import os
 import re
 import sys
@@ -72,7 +72,9 @@ def load_telegram(settings: dict[str, str | None]) -> TelegramConfig | None:
     if not token and not chat_id:
         return None
     if not token or not chat_id:
-        raise MonitorError("Set both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID, or leave both empty.")
+        raise MonitorError(
+            "Set both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID, or leave both empty."
+        )
     if re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", token) is None:
         raise MonitorError("TELEGRAM_BOT_TOKEN has an invalid format.")
     return TelegramConfig(token, chat_id)
@@ -87,19 +89,25 @@ def load_config(settings: dict[str, str | None]) -> tuple[str, tuple[str, ...]]:
     if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
         raise MonitorError("PAGE_URL must be an absolute HTTP or HTTPS URL.")
 
-    numbers = tuple(number.strip() for number in (settings.get("NUMBERS") or "").split(","))
+    numbers = tuple(
+        number.strip() for number in (settings.get("NUMBERS") or "").split(",")
+    )
     if any(NUMBER_PATTERN.fullmatch(number) is None for number in numbers):
-        raise MonitorError("Set NUMBERS to comma-separated six-digit application numbers.")
+        raise MonitorError(
+            "Set NUMBERS to comma-separated six-digit application numbers."
+        )
     return page_url, tuple(dict.fromkeys(numbers))
 
 
-def load_state(path: Path) -> State:
+def load_state(path: Path) -> State:  # noqa: C901
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return State()
     except (OSError, UnicodeError, ValueError) as exc:
-        raise MonitorError("Could not read state; restore data/state.json before retrying.") from exc
+        raise MonitorError(
+            "Could not read state; restore data/state.json before retrying."
+        ) from exc
 
     try:
         if not isinstance(data, dict):
@@ -112,20 +120,39 @@ def load_state(path: Path) -> State:
             raise ValueError
         daily = data.pop("daily", None)
         if daily is not None:
-            if not isinstance(daily, dict) or set(daily) != {"date", "successful", "failed", "pdf_downloaded", "errors", "report_delivered"}:
+            if not isinstance(daily, dict) or set(daily) != {
+                "date",
+                "successful",
+                "failed",
+                "pdf_downloaded",
+                "errors",
+                "report_delivered",
+            }:
                 raise ValueError
-            if not isinstance(daily["date"], str) or date.fromisoformat(daily["date"]).isoformat() != daily["date"]:
+            if (
+                not isinstance(daily["date"], str)
+                or date.fromisoformat(daily["date"]).isoformat() != daily["date"]
+            ):
                 raise ValueError
-            if any(type(daily[key]) is not int or daily[key] < 0 for key in ("successful", "failed")):
+            if any(
+                type(daily[key]) is not int or daily[key] < 0
+                for key in ("successful", "failed")
+            ):
                 raise ValueError
-            if any(type(daily[key]) is not bool for key in ("pdf_downloaded", "report_delivered")):
+            if any(
+                type(daily[key]) is not bool
+                for key in ("pdf_downloaded", "report_delivered")
+            ):
                 raise ValueError
-            if not isinstance(daily["errors"], list) or any(not isinstance(x, str) for x in daily["errors"]):
+            if not isinstance(daily["errors"], list) or any(
+                not isinstance(x, str) for x in daily["errors"]
+            ):
                 raise ValueError
         state = State(**data)
         for values in (state.last_targets, state.notified_numbers):
             if not isinstance(values, list) or any(
-                not isinstance(number, str) or NUMBER_PATTERN.fullmatch(number) is None for number in values
+                not isinstance(number, str) or NUMBER_PATTERN.fullmatch(number) is None
+                for number in values
             ):
                 raise ValueError
         if not isinstance(state.found_numbers, dict) or any(
@@ -145,13 +172,17 @@ def load_state(path: Path) -> State:
         if (state.last_pdf_url is None) != (state.last_processed_date is None):
             raise ValueError
         if state.last_pdf_url is not None:
-            if not isinstance(state.last_pdf_url, str) or not state.last_pdf_url.startswith(("https://", "http://")):
+            if not isinstance(
+                state.last_pdf_url, str
+            ) or not state.last_pdf_url.startswith(("https://", "http://")):
                 raise ValueError
         if state.last_processed_date is not None:
             date.fromisoformat(state.last_processed_date)
         return state
     except (ValueError, TypeError) as exc:
-        raise MonitorError("Invalid state; restore data/state.json before retrying.") from exc
+        raise MonitorError(
+            "Invalid state; restore data/state.json before retrying."
+        ) from exc
 
 
 def save_state(state: State, path: Path) -> None:
@@ -187,9 +218,16 @@ def save_state(state: State, path: Path) -> None:
 
 def belgrade_date(now: datetime | None = None) -> str:
     try:
-        return (now or datetime.now(timezone.utc)).astimezone(ZoneInfo("Europe/Belgrade")).date().isoformat()
+        return (
+            (now or datetime.now(timezone.utc))
+            .astimezone(ZoneInfo("Europe/Belgrade"))
+            .date()
+            .isoformat()
+        )
     except ZoneInfoNotFoundError as exc:
-        raise MonitorError("Europe/Belgrade time zone data is missing; install tzdata.") from exc
+        raise MonitorError(
+            "Europe/Belgrade time zone data is missing; install tzdata."
+        ) from exc
 
 
 class _PickupLinkParser(HTMLParser):
@@ -230,7 +268,9 @@ def resolve_pdf_url(html: str, page_url: str) -> str:
         parser.feed(html)
         parser.close()
     except ValueError as exc:
-        raise MonitorError("Could not parse the source page's pickup-list links.") from exc
+        raise MonitorError(
+            "Could not parse the source page's pickup-list links."
+        ) from exc
     if len(parser.links) != 1:
         raise MonitorError(
             f"Expected one pickup-list PDF link; found {len(parser.links)}. "
@@ -271,9 +311,13 @@ def request_once(request: Request, action: str) -> tuple[bytes, str]:
         with exc:
             with suppress(OSError, HTTPException):
                 body = exc.read()
-        raise MonitorError(f"Could not {action} (HTTP {exc.code}).", retry_delay(exc.code, body)) from exc
+        raise MonitorError(
+            f"Could not {action} (HTTP {exc.code}).", retry_delay(exc.code, body)
+        ) from exc
     except (URLError, OSError, HTTPException, ValueError) as exc:
-        raise MonitorError(f"Could not {action}; check the connection and URL.", 1) from exc
+        raise MonitorError(
+            f"Could not {action}; check the connection and URL.", 1
+        ) from exc
 
 
 def fetch(url: str, label: str) -> tuple[bytes, str]:
@@ -299,16 +343,18 @@ def send_telegram(config: TelegramConfig, text: str) -> None:
         if response.get("ok") is not True:
             code = response.get("error_code", 0)
             delay = retry_delay(code, body) if type(code) is int else None
-            raise MonitorError("Telegram rejected the notification; check the bot and chat.", delay)
+            raise MonitorError(
+                "Telegram rejected the notification; check the bot and chat.", delay
+            )
 
     retry(send)
 
 
 def parse_numbers(text: str) -> set[str]:
     numbers = set()
-    for number, date, start, end in ENTRY_PATTERN.findall(text):
+    for number, pickup_date, start, end in ENTRY_PATTERN.findall(text):
         try:
-            datetime.strptime(date, "%d.%m.%Y")
+            datetime.strptime(pickup_date, "%d.%m.%Y")
             datetime.strptime(start, "%H:%M")
             datetime.strptime(end, "%H:%M")
         except ValueError:
@@ -327,11 +373,15 @@ def extract_numbers(pdf: bytes) -> set[str]:
     for text in texts:
         numbers.update(parse_numbers(text))
     if not numbers:
-        raise MonitorError("The PDF contains no valid pickup entries; check its format.")
+        raise MonitorError(
+            "The PDF contains no valid pickup entries; check its format."
+        )
     return numbers
 
 
-def check_pdf(page_url: str, targets: tuple[str, ...], state: State, today: str) -> None:
+def check_pdf(
+    page_url: str, targets: tuple[str, ...], state: State, today: str
+) -> None:
     page, effective_page_url = fetch(page_url, "the source page")
     try:
         html = page.decode("utf-8")
@@ -369,7 +419,9 @@ def report_errors(
 ) -> None:
     for message in dict.fromkeys(str(error) for error in errors):
         print(f"Error: {message}", file=sys.stderr)
-        if telegram is None or (state is not None and message in state.error_notifications):
+        if telegram is None or (
+            state is not None and message in state.error_notifications
+        ):
             continue
         try:
             send_telegram(telegram, f"Visa Pickup Monitor error:\n{message}")
@@ -384,7 +436,7 @@ def report_errors(
                 print(f"Error: {exc}", file=sys.stderr)
 
 
-def main(state_path: Path = STATE_PATH) -> int:
+def main(state_path: Path = STATE_PATH) -> int:  # noqa: C901
     telegram = None
     state = None
     errors = []
@@ -417,7 +469,10 @@ def main(state_path: Path = STATE_PATH) -> int:
         saving_failed = False
         if telegram is not None:
             for number in targets:
-                if number not in state.found_numbers or number in state.notified_numbers:
+                if (
+                    number not in state.found_numbers
+                    or number in state.notified_numbers
+                ):
                     continue
                 try:
                     send_telegram(
