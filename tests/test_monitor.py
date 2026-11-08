@@ -241,12 +241,36 @@ class ScriptTests(unittest.TestCase):
             result = monitor.main(self.state_path)
         return result, stdout.getvalue(), stderr.getvalue()
 
-    def responses(self, pdf):
-        html = b'<a href="current.pdf">Abholliste</a>'
+    def responses(self, pdf, pdf_name="current.pdf"):
+        html = f'<a href="{pdf_name}">Abholliste</a>'.encode()
         return [
             Response(html, "https://embassy.example/service/"),
-            Response(pdf, "https://embassy.example/service/current.pdf"),
+            Response(pdf, f"https://embassy.example/service/{pdf_name}"),
         ]
+
+    def write_legacy_state(self, version):
+        legacy = {
+            "version": version,
+            "last_pdf_url": "https://embassy.example/service/current.pdf",
+            "last_processed_date": "2026-11-05",
+            "last_targets": ["123456", "000123"],
+            "found_numbers": {"123456": "https://embassy.example/discovery.pdf"},
+            "notified_numbers": ["123456"],
+            "error_notifications": [
+                "Could not download the source page; check the connection and URL."
+            ],
+        }
+        if version == 2:
+            legacy["daily"] = {
+                "date": "2026-11-05",
+                "successful": 2,
+                "failed": 1,
+                "pdf_downloaded": True,
+                "errors": [],
+                "report_delivered": False,
+            }
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.state_path.write_text(json.dumps(legacy))
 
     def test_complete_check_prints_matches_and_missing_targets(self):
         responses = self.responses(make_pdf("123456 01.01.2020 08:00-10:00"))
@@ -338,19 +362,61 @@ class ScriptTests(unittest.TestCase):
             set(monitor.load_state(self.state_path).found_numbers), {"123456", "000123"}
         )
 
-    def test_removed_target_is_ignored_and_history_survives_readding(self):
-        self.run_script(self.responses(make_pdf("123456 01.01.2020 08:00-10:00")))
-        self.assertEqual(self.run_script([], numbers="123456")[0], 0)
-        self.run_script(
-            self.responses(make_pdf("000123 01.01.2099 08:00-10:00")),
-            today="2026-11-06",
+    def test_removed_found_target_keeps_discovery_history_when_readded(self):
+        first = self.responses(make_pdf("123456 01.01.2020 08:00-10:00"))
+        later = self.responses(make_pdf("000123 01.01.2099 08:00-10:00"), "later.pdf")
+        self.assertEqual(self.run_script(first)[0], 0)
+        self.assertEqual(self.run_script(later, numbers="000123")[0], 0)
+
+        saved = json.loads(self.state_path.read_text())
+        self.assertEqual(
+            saved["found_numbers"],
+            {
+                "123456": "https://embassy.example/service/current.pdf",
+                "000123": "https://embassy.example/service/later.pdf",
+            },
         )
-        result, stdout, _ = self.run_script([], numbers="123456")
+        self.assertEqual(saved["notified_numbers"], [])
+
+        result, stdout, stderr = self.run_script([])
         self.assertEqual(result, 0)
         self.assertIn("Monitoring complete", stdout)
+        self.assertEqual(stderr, "")
+        restored = json.loads(self.state_path.read_text())
+        self.assertEqual(restored["found_numbers"], saved["found_numbers"])
+        self.assertEqual(restored["notified_numbers"], [])
+
+    def test_removed_notified_target_is_not_sent_again_when_readded_in_another_chat(
+        self,
+    ):
+        first = self.responses(make_pdf("123456 01.01.2020 08:00-10:00"))
+        later = self.responses(make_pdf("000123 01.01.2099 08:00-10:00"), "later.pdf")
+        with patch("monitor.send_telegram") as sender:
+            self.assertEqual(self.run_script(first, telegram=True)[0], 0)
+            sender.assert_called_once()
+            self.assertIn("Application number 123456", sender.call_args.args[1])
+        with patch("monitor.send_telegram") as sender:
+            self.assertEqual(
+                self.run_script(later, numbers="000123", telegram=True)[0], 0
+            )
+            sender.assert_called_once()
+            self.assertIn("Application number 000123", sender.call_args.args[1])
+
+        saved = json.loads(self.state_path.read_text())
+        self.assertCountEqual(saved["notified_numbers"], ["123456", "000123"])
         self.assertEqual(
-            set(monitor.load_state(self.state_path).found_numbers), {"123456", "000123"}
+            saved["found_numbers"].get("123456"),
+            "https://embassy.example/service/current.pdf",
         )
+        with patch("monitor.send_telegram") as sender:
+            result, stdout, stderr = self.run_script([], telegram=True, chat_id="789")
+            self.assertEqual(result, 0)
+            self.assertIn("Monitoring complete", stdout)
+            self.assertEqual(stderr, "")
+            sender.assert_not_called()
+        restored = json.loads(self.state_path.read_text())
+        self.assertEqual(restored["found_numbers"], saved["found_numbers"])
+        self.assertCountEqual(restored["notified_numbers"], ["123456", "000123"])
 
     def test_failed_processing_is_retried_with_the_same_url_today(self):
         self.assertEqual(
@@ -440,6 +506,31 @@ class ScriptTests(unittest.TestCase):
             self.assertIn("000123", sender.call_args.args[1])
         self.assertEqual(monitor.load_state(self.state_path).error_notifications, [])
 
+    def test_confirmed_delivery_survives_interruption_before_the_next_delivery(self):
+        pdf = make_pdf("123456 01.01.2020 08:00-10:00\n000123 01.01.2099 08:00-10:00")
+        self.assertEqual(self.run_script(self.responses(pdf))[0], 0)
+        with patch(
+            "monitor.send_telegram", side_effect=[None, KeyboardInterrupt()]
+        ) as sender:
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_script([], telegram=True)
+            self.assertEqual(sender.call_count, 2)
+            self.assertIn("Application number 123456", sender.call_args_list[0].args[1])
+            self.assertIn("Application number 000123", sender.call_args_list[1].args[1])
+        saved = json.loads(self.state_path.read_text())
+        self.assertEqual(saved["notified_numbers"], ["123456"])
+        self.assertEqual(saved["error_notifications"], [])
+        with patch("monitor.send_telegram") as sender:
+            result, _, stderr = self.run_script([], telegram=True)
+            self.assertEqual(result, 0)
+            self.assertEqual(stderr, "")
+            sender.assert_called_once()
+            self.assertIn("Application number 000123", sender.call_args.args[1])
+        self.assertCountEqual(
+            json.loads(self.state_path.read_text())["notified_numbers"],
+            ["123456", "000123"],
+        )
+
     def test_pending_delivery_is_attempted_even_if_the_source_page_fails(self):
         self.run_script(self.responses(make_pdf("123456 01.01.2020 08:00-10:00")))
         with patch("monitor.send_telegram") as sender:
@@ -454,20 +545,81 @@ class ScriptTests(unittest.TestCase):
             monitor.load_state(self.state_path).notified_numbers, ["123456"]
         )
 
-    def test_error_alert_is_once_per_episode_and_success_silently_resets_it(self):
-        for expected_calls in (1, 0):
+    def test_save_failure_after_confirmed_delivery_keeps_disk_history_and_allows_retry(
+        self,
+    ):
+        pdf = make_pdf("123456 01.01.2020 08:00-10:00")
+        self.assertEqual(self.run_script(self.responses(pdf), numbers="123456")[0], 0)
+        original = self.state_path.read_bytes()
+        replace = os.replace
+        failed = False
+
+        def fail_notification_save(source, destination):
+            nonlocal failed
+            saved = json.loads(Path(source).read_text())
+            if saved["notified_numbers"] and not failed:
+                failed = True
+                raise OSError("Synthetic disk failure after confirmed delivery")
+            return replace(source, destination)
+
+        with (
+            patch("monitor.os.replace", side_effect=fail_notification_save),
+            patch("monitor.send_telegram") as sender,
+        ):
+            result, stdout, stderr = self.run_script(
+                [], numbers="123456", telegram=True
+            )
+            self.assertEqual(result, 1)
+            self.assertIn("Could not save data/state.json", stderr)
+            self.assertNotIn("Monitoring complete", stdout)
+            self.assertEqual(sender.call_count, 2)
+            self.assertIn("Application number 123456", sender.call_args_list[0].args[1])
+            self.assertIn("Monitor error", sender.call_args_list[1].args[1])
+        self.assertTrue(failed)
+        self.assertEqual(self.state_path.read_bytes(), original)
+        self.assertEqual(json.loads(original)["notified_numbers"], [])
+        with patch("monitor.send_telegram") as sender:
+            result, _, stderr = self.run_script([], numbers="123456", telegram=True)
+            self.assertEqual(result, 0)
+            self.assertEqual(stderr, "")
+            sender.assert_called_once()
+            self.assertIn("Application number 123456", sender.call_args.args[1])
+        self.assertEqual(
+            json.loads(self.state_path.read_text())["notified_numbers"], ["123456"]
+        )
+
+    def test_distinct_errors_are_once_per_episode_and_success_silently_resets_it(self):
+        download_error = (
+            "Could not download the source page; check the connection and URL."
+        )
+        pdf_error = "The PDF contains no valid pickup entries; check its format."
+        for index, message in enumerate((download_error, pdf_error) * 2):
+            responses = (
+                [URLError("offline") for _ in range(3)]
+                if message == download_error
+                else self.responses(make_pdf("No pickup entries"))
+            )
             with patch("monitor.send_telegram") as sender:
-                result, _, _ = self.run_script(
-                    [URLError("offline") for _ in range(3)], telegram=True
-                )
+                result, _, stderr = self.run_script(responses, telegram=True)
                 self.assertEqual(result, 1)
-                self.assertEqual(sender.call_count, expected_calls)
+                self.assertIn(message, stderr)
+                self.assertEqual(
+                    [call.args[1] for call in sender.call_args_list],
+                    [f"Visa Pickup Monitor error:\n{message}"] if index < 2 else [],
+                )
+        self.assertCountEqual(
+            json.loads(self.state_path.read_text())["error_notifications"],
+            [download_error, pdf_error],
+        )
         with patch("monitor.send_telegram") as sender:
             result, _, _ = self.run_script(
                 self.responses(make_pdf("654321 01.01.2099 08:00-10:00")), telegram=True
             )
             self.assertEqual(result, 0)
             sender.assert_not_called()
+        self.assertEqual(
+            json.loads(self.state_path.read_text())["error_notifications"], []
+        )
         with patch("monitor.send_telegram") as sender:
             self.assertEqual(
                 self.run_script([URLError("offline") for _ in range(3)], telegram=True)[
@@ -478,17 +630,24 @@ class ScriptTests(unittest.TestCase):
             sender.assert_called_once()
 
     def test_failed_error_alert_is_not_recorded_or_replayed_after_recovery(self):
-        with patch(
-            "monitor.send_telegram",
-            side_effect=monitor.MonitorError("Telegram unavailable"),
-        ):
-            self.assertEqual(
-                self.run_script([URLError("offline") for _ in range(3)], telegram=True)[
-                    0
-                ],
-                1,
-            )
-        self.assertEqual(monitor.load_state(self.state_path).error_notifications, [])
+        for attempt in range(2):
+            with (
+                self.subTest(attempt=attempt),
+                patch(
+                    "monitor.send_telegram",
+                    side_effect=monitor.MonitorError("Telegram unavailable"),
+                ) as sender,
+            ):
+                result, _, stderr = self.run_script(
+                    [URLError("offline") for _ in range(3)], telegram=True
+                )
+                self.assertEqual(result, 1)
+                self.assertIn("Error alert could not be sent", stderr)
+                sender.assert_called_once()
+                self.assertIn("Monitor error", sender.call_args.args[1])
+                self.assertEqual(
+                    json.loads(self.state_path.read_text())["error_notifications"], []
+                )
         with patch("monitor.send_telegram") as sender:
             result, _, _ = self.run_script(
                 self.responses(make_pdf("654321 01.01.2099 08:00-10:00")), telegram=True
@@ -522,57 +681,54 @@ class ScriptTests(unittest.TestCase):
             sender.assert_called_once()
         self.assertEqual(self.state_path.read_text(), "broken state")
 
-    def test_legacy_state_preserves_history_suppression_and_cache(self):
+    def test_legacy_state_preserves_found_and_notified_history_when_upgraded(self):
         for version in (1, 2):
             with self.subTest(version=version):
-                legacy = monitor.asdict(
-                    monitor.State(
-                        last_pdf_url="https://embassy.example/service/current.pdf",
-                        last_processed_date="2026-11-05",
-                        last_targets=["123456", "000123"],
-                        found_numbers={
-                            "123456": "https://embassy.example/discovery.pdf"
-                        },
-                        notified_numbers=["123456"],
-                        error_notifications=[
-                            "Could not download the source page; check the connection and URL."
-                        ],
-                    )
-                )
-                if version == 2:
-                    legacy["daily"] = {
-                        "date": "2026-11-05",
-                        "successful": 2,
-                        "failed": 1,
-                        "pdf_downloaded": True,
-                        "errors": [],
-                        "report_delivered": False,
-                    }
-                self.state_path.parent.mkdir(parents=True, exist_ok=True)
-                self.state_path.write_text(json.dumps({"version": version, **legacy}))
-                with patch("monitor.send_telegram") as sender:
-                    result, _, _ = self.run_script(
-                        [URLError("offline")] * 3, telegram=True
-                    )
-                    self.assertEqual(result, 1)
-                    sender.assert_not_called()
-                with patch("monitor.send_telegram") as sender:
-                    result, output, _ = self.run_script(
-                        [self.responses(b"")[0]], telegram=True
-                    )
-                    self.assertEqual(result, 0)
-                    self.assertIn("already processed", output)
-                    sender.assert_not_called()
-                state = monitor.load_state(self.state_path)
-                self.assertEqual(
-                    state.found_numbers["123456"],
-                    "https://embassy.example/discovery.pdf",
-                )
-                self.assertEqual(state.notified_numbers, ["123456"])
-                self.assertEqual(state.error_notifications, [])
+                self.write_legacy_state(version)
+                result, _, stderr = self.run_script([self.responses(b"")[0]])
+                self.assertEqual(result, 0)
+                self.assertEqual(stderr, "")
+
                 saved = json.loads(self.state_path.read_text())
+                self.assertEqual(
+                    saved["found_numbers"],
+                    {"123456": "https://embassy.example/discovery.pdf"},
+                )
+                self.assertEqual(saved["notified_numbers"], ["123456"])
                 self.assertEqual(saved["version"], 3)
                 self.assertNotIn("daily", saved)
+
+    def test_legacy_state_suppresses_previously_delivered_error_alert(self):
+        for version in (1, 2):
+            with (
+                self.subTest(version=version),
+                patch("monitor.send_telegram") as sender,
+            ):
+                self.write_legacy_state(version)
+                result, _, stderr = self.run_script(
+                    [URLError("offline")] * 3, telegram=True
+                )
+                self.assertEqual(result, 1)
+                self.assertIn("Could not download the source page", stderr)
+                sender.assert_not_called()
+
+    def test_legacy_state_preserves_cache_and_silently_clears_failure_episode(self):
+        for version in (1, 2):
+            with (
+                self.subTest(version=version),
+                patch("monitor.send_telegram") as sender,
+            ):
+                self.write_legacy_state(version)
+                result, output, stderr = self.run_script(
+                    [self.responses(b"")[0]], telegram=True
+                )
+                self.assertEqual(result, 0)
+                self.assertIn("already processed", output)
+                self.assertEqual(stderr, "")
+                sender.assert_not_called()
+                self.assertEqual(
+                    json.loads(self.state_path.read_text())["error_notifications"], []
+                )
 
     def test_completed_legacy_state_is_upgraded_without_requests(self):
         state = monitor.asdict(
