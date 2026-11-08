@@ -38,7 +38,7 @@ T = TypeVar("T")
 class MonitorError(Exception):
     """A configuration, download, or pickup-list processing failure."""
 
-    def __init__(self, message: str, retry_after: float | None = None):
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
         super().__init__(message)
         self.retry_after = retry_after
 
@@ -231,23 +231,23 @@ def belgrade_date(now: datetime | None = None) -> str:
 
 
 class _PickupLinkParser(HTMLParser):
-    def __init__(self, page_url: str):
+    def __init__(self, page_url: str) -> None:
         super().__init__()
         self.page_url = page_url
         self.links: set[str] = set()
         self.href: str | None = None
         self.label: list[str] = []
 
-    def handle_starttag(self, tag, attrs):
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "a":
             self.href = dict(attrs).get("href")
             self.label = []
 
-    def handle_data(self, data):
+    def handle_data(self, data: str) -> None:
         if self.href is not None:
             self.label.append(data)
 
-    def handle_endtag(self, tag):
+    def handle_endtag(self, tag: str) -> None:
         if tag != "a" or self.href is None:
             return
         label = " ".join(" ".join(self.label).casefold().split())
@@ -332,7 +332,7 @@ def send_telegram(config: TelegramConfig, text: str) -> None:
         headers={"Content-Type": "application/json"},
     )
 
-    def send():
+    def send() -> None:
         body, _ = request_once(request, "send Telegram notification")
         try:
             response = json.loads(body)
