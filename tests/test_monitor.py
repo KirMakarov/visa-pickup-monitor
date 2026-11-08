@@ -213,12 +213,13 @@ class ScriptTests(unittest.TestCase):
         telegram=False,
         today="2026-11-05",
         chat_id="456",
+        bot_token="123:test",
         requests=None,
     ):
         stdout, stderr = StringIO(), StringIO()
         settings = {"PAGE_URL": "https://embassy.example/start", "NUMBERS": numbers}
         if telegram:
-            settings.update(TELEGRAM_BOT_TOKEN="123:test", TELEGRAM_CHAT_ID=chat_id)
+            settings.update(TELEGRAM_BOT_TOKEN=bot_token, TELEGRAM_CHAT_ID=chat_id)
         response_iter = iter(responses)
 
         def respond(request, **kwargs):
@@ -458,14 +459,23 @@ class ScriptTests(unittest.TestCase):
                 b'{"ok":true,"result":{"message_id":1}}', "https://api.telegram.org/"
             )
         )
+        requests = []
         result, stdout, stderr = self.run_script(
-            responses, numbers="123456", telegram=True
+            responses,
+            numbers="123456",
+            telegram=True,
+            bot_token="987:configured-token",
+            requests=requests,
         )
         self.assertEqual(result, 0)
         self.assertEqual(stderr, "")
         self.assertIn("Monitoring complete", stdout)
         self.assertEqual(
             monitor.load_state(self.state_path).notified_numbers, ["123456"]
+        )
+        self.assertEqual(
+            [request.full_url for request in requests if request.data is not None],
+            ["https://api.telegram.org/bot987:configured-token/sendMessage"],
         )
 
     def test_unsent_matches_remain_pending_without_a_stale_error_queue(self):
