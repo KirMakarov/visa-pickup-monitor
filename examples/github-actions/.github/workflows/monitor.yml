@@ -1,0 +1,106 @@
+name: Visa Pickup Monitor
+
+"on":
+  workflow_dispatch:
+    inputs:
+      scheduled:
+        description: Scheduled monitoring execution
+        type: boolean
+        default: false
+      report:
+        description: Request the daily report (scheduled executions only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: visa-pickup-monitor
+  cancel-in-progress: false
+
+env:
+  MONITOR_REF: e4a2d301fc2b6c838e6aad6843a0d04ced2f6560
+
+jobs:
+  monitor:
+    if: ${{ github.event.repository.private }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out current private configuration and state
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Check out pinned public monitor code
+        uses: actions/checkout@v7
+        with:
+          repository: KirMakarov/visa-pickup-monitor
+          ref: ${{ env.MONITOR_REF }}
+          path: monitor-code
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Install monitor dependencies
+        run: python -m pip install --disable-pip-version-check -r monitor-code/requirements.txt
+
+      - name: Check the pickup list
+        id: check
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SCHEDULED: ${{ inputs.scheduled }}
+          REPORT: ${{ inputs.report }}
+        run: |
+          cp config.env .env
+          if [[ -n "$TELEGRAM_BOT_TOKEN" ]]; then echo 'TELEGRAM_BOT_TOKEN: configured'; else echo 'TELEGRAM_BOT_TOKEN: missing'; fi
+          if [[ -n "$TELEGRAM_CHAT_ID" ]]; then echo 'TELEGRAM_CHAT_ID: configured'; else echo 'TELEGRAM_CHAT_ID: missing'; fi
+          if [[ "$SCHEDULED" == true && "$REPORT" == true ]]; then
+            python -u monitor-code/monitor.py --report
+          else
+            python -u monitor-code/monitor.py
+          fi
+
+      - name: Save state after a successful or failed check
+        if: ${{ !cancelled() && (steps.check.outcome == 'success' || steps.check.outcome == 'failure') }}
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ ! -f data/state.json ]]; then
+            exit 0
+          fi
+          git add -- data/state.json
+          if git diff --cached --quiet -- data/state.json; then
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m 'Update monitor state' -- data/state.json
+          git push origin "HEAD:$DEFAULT_BRANCH"
+
+      - name: Signal final hosted outcome
+        if: ${{ !cancelled() && inputs.scheduled }}
+        env:
+          HEALTHCHECKS_PING_URL: ${{ secrets.HEALTHCHECKS_PING_URL }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [[ -z "$HEALTHCHECKS_PING_URL" ]]; then
+            exit 0
+          fi
+          url="${HEALTHCHECKS_PING_URL%/}"
+          if [[ "$JOB_STATUS" != success ]]; then
+            url="$url/fail"
+          fi
+          if ! response=$(curl --silent --max-time 15 --write-out '\n%{http_code}' "$url"); then
+            echo 'Healthchecks signal failed.' >&2
+            exit 1
+          fi
+          if [[ "$response" != $'OK\n200' ]]; then
+            echo 'Healthchecks did not accept the signal.' >&2
+            exit 1
+          fi

@@ -159,6 +159,10 @@ ENV/
 env.bak/
 venv.bak/
 
+# Private monitor state and temporary files used for atomic writes
+data/state.json
+data/.state-*.tmp
+
 # Spyder project settings
 .spyderproject
 .spyproject
