@@ -25,9 +25,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("JOB_STATUS: ${{ job.status }}", signal)
         self.assertIn("  workflow_dispatch:\n    inputs:", workflow)
         self.assertNotIn("  schedule:", workflow)
-        for name in ("scheduled", "report"):
-            self.assertIn(f"      {name}:\n", workflow)
-        self.assertEqual(workflow.count("        type: boolean\n        default: false"), 2)
+        self.assertIn("      scheduled:\n", workflow)
+        self.assertNotIn("      report:\n", workflow)
+        self.assertEqual(workflow.count("        type: boolean\n        default: false"), 1)
         self.assertLess(workflow.index("      - name: Save state after"), workflow.index("      - name: Signal final hosted outcome"))
         self.assertNotIn("/start", signal)
 
@@ -71,7 +71,7 @@ class WorkflowTests(unittest.TestCase):
         scripts = [step_script(name) for name in (
             "Check the pickup list", "Save state after a successful or failed check",
             "Signal final hosted outcome")]
-        cases = ("success", "completed", "monitor", "report", "commit", "push", "setup")
+        cases = ("success", "completed", "monitor", "commit", "push", "setup")
         for case in cases:
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -91,9 +91,9 @@ class WorkflowTests(unittest.TestCase):
                     (root / name).chmod(0o755)
                 env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "CASE": case,
                        "DEFAULT_BRANCH": "main", "SCHEDULED": "true",
-                       "REPORT": "true", "TELEGRAM_BOT_TOKEN": "",
+                       "TELEGRAM_BOT_TOKEN": "",
                        "TELEGRAM_CHAT_ID": "", "HEALTHCHECKS_PING_URL": "https://health.example/check",
-                       "MONITOR_EXIT": "1" if case in ("monitor", "report") else "0"}
+                       "MONITOR_EXIT": "1" if case == "monitor" else "0"}
                 status = "success"
                 if case == "setup":
                     status = "failure"
@@ -108,30 +108,27 @@ class WorkflowTests(unittest.TestCase):
                 calls = (root / "calls").read_text().splitlines()
                 self.assertTrue(calls[-1].startswith("health "))
                 self.assertEqual(calls[-1].endswith("/fail"), case not in ("success", "completed"))
-                if case in ("monitor", "report"):
+                if case == "monitor":
                     self.assertTrue(any(line.startswith("git push") for line in calls))
 
-    def test_report_selected_by_explicit_scheduled_intent(self):
+    def test_scheduled_and_manual_runs_use_identical_monitor_invocation(self):
         script = step_script("Check the pickup list")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "config.env").write_text("NUMBERS=123456\n")
             (root / "python").write_text('#!/bin/sh\nprintf "%s\\n" "$*" > args\nexit "${MONITOR_EXIT:-0}"\n')
             (root / "python").chmod(0o755)
-            for scheduled, report, expected in (("true", "true", True),
-                                                 ("true", "false", False),
-                                                 ("false", "false", False),
-                                                 ("false", "true", False),
-                                                 ("", "", False)):
-                with self.subTest(scheduled=scheduled, report=report):
-                    env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
-                           "SCHEDULED": scheduled, "REPORT": report,
-                           "TELEGRAM_BOT_TOKEN": "", "TELEGRAM_CHAT_ID": ""}
-                    result = subprocess.run(["bash", "-e", "-c", script], cwd=root, env=env, capture_output=True)
-                    self.assertEqual(result.returncode, 0)
-                    self.assertEqual("--report" in (root / "args").read_text(), expected)
-                    env["MONITOR_EXIT"] = "1"
-                    self.assertNotEqual(subprocess.run(["bash", "-e", "-c", script], cwd=root, env=env, capture_output=True).returncode, 0)
+            invocations = []
+            for scheduled in ("true", "false", ""):
+                env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                       "SCHEDULED": scheduled, "TELEGRAM_BOT_TOKEN": "", "TELEGRAM_CHAT_ID": ""}
+                result = subprocess.run(["bash", "-e", "-c", script], cwd=root, env=env, capture_output=True)
+                self.assertEqual(result.returncode, 0)
+                invocations.append((root / "args").read_text())
+                env["MONITOR_EXIT"] = "1"
+                self.assertNotEqual(subprocess.run(["bash", "-e", "-c", script], cwd=root, env=env, capture_output=True).returncode, 0)
+            self.assertEqual(len(set(invocations)), 1)
+            self.assertNotIn("--report", invocations[0])
 
     def test_state_step_skips_missing_and_unchanged_and_propagates_push_failure(self):
         script = step_script("Save state after a successful or failed check")

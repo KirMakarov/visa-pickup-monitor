@@ -7,10 +7,6 @@ name: Visa Pickup Monitor
         description: Scheduled monitoring execution
         type: boolean
         default: false
-      report:
-        description: Request the daily report (scheduled executions only)
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -54,17 +50,11 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SCHEDULED: ${{ inputs.scheduled }}
-          REPORT: ${{ inputs.report }}
         run: |
           cp config.env .env
           if [[ -n "$TELEGRAM_BOT_TOKEN" ]]; then echo 'TELEGRAM_BOT_TOKEN: configured'; else echo 'TELEGRAM_BOT_TOKEN: missing'; fi
           if [[ -n "$TELEGRAM_CHAT_ID" ]]; then echo 'TELEGRAM_CHAT_ID: configured'; else echo 'TELEGRAM_CHAT_ID: missing'; fi
-          if [[ "$SCHEDULED" == true && "$REPORT" == true ]]; then
-            python -u monitor-code/monitor.py --report
-          else
-            python -u monitor-code/monitor.py
-          fi
+          python -u monitor-code/monitor.py
 
       - name: Save state after a successful or failed check
         if: ${{ !cancelled() && (steps.check.outcome == 'success' || steps.check.outcome == 'failure') }}
