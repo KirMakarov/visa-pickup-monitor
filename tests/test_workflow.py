@@ -242,9 +242,19 @@ class WorkflowTests(unittest.TestCase):
                 )
 
     def test_setup_failure_skips_save_but_allows_scheduled_health_guard(self):
-        # Model only the step outcomes after setup failed; no hosted setup runs here.
-        self.assertFalse(step_enabled(SAVE, outcome="skipped"))
-        self.assertTrue(step_enabled(SIGNAL, scheduled=True))
+        # Model skipped check/save after setup failed; hosted setup is not run here.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = prepare_workflow_checkout(root)
+            env["JOB_STATUS"] = "failure"
+
+            save = run_guarded_step(SAVE, root, env, outcome="skipped")
+            self.assertIsNone(save)
+            signal = run_guarded_step(SIGNAL, root, env, scheduled=True)
+            self.assertIsNotNone(signal)
+            self.assertEqual(signal.returncode, 0)
+            calls = (root / "calls").read_text().splitlines()
+            self.assertEqual(calls, ["health https://health.example/check/fail"])
 
     def test_monitor_step_binds_current_telegram_secrets_and_check_outcome(self):
         check = step_definition(CHECK)
