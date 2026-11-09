@@ -242,24 +242,23 @@ class ScriptTests(unittest.TestCase):
             settings.update(TELEGRAM_BOT_TOKEN=bot_token, TELEGRAM_CHAT_ID=chat_id)
         response_iter = iter(responses)
         request_log = []
-        route_errors = []
 
         def respond(request, **kwargs):
             request_log.append(request)
             if expected_requests is not None:
                 request_index = len(request_log) - 1
                 if request_index >= len(expected_requests):
-                    route_errors.append(f"Unexpected HTTP request: {request.full_url}")
+                    self.fail(f"Unexpected HTTP request: {request.full_url}")
                 else:
                     expected_url = expected_requests[request_index]
-                    if request.full_url != expected_url:
-                        route_errors.append(
-                            f"HTTP request {request_index + 1} was "
-                            f"{request.full_url}; expected {expected_url}"
-                        )
+                    self.assertEqual(request.full_url, expected_url)
             if requests is not None:
                 requests.append(request)
-            response = next(response_iter)
+            response = next(response_iter, None)
+            if response is None:
+                self.fail(
+                    f"No response configured for HTTP request: {request.full_url}"
+                )
             if isinstance(response, Exception):
                 raise response
             return response
@@ -280,8 +279,6 @@ class ScriptTests(unittest.TestCase):
         ):
             result = monitor.main(self.state_path)
         if expected_requests is not None:
-            if route_errors:
-                self.fail("; ".join(route_errors))
             self.assertEqual(
                 len(request_log),
                 len(expected_requests),
@@ -964,6 +961,9 @@ class ScriptTests(unittest.TestCase):
                 self.assertIn("Error alert could not be sent", stderr)
                 sender.assert_called_once()
                 self.assertIn("Monitor error", sender.call_args.args[1])
+                self.assertTrue(
+                    self.state_path.is_file(), "Failed check did not persist state"
+                )
                 self.assertEqual(
                     json.loads(self.state_path.read_text())["error_notifications"], []
                 )
@@ -1321,6 +1321,7 @@ class StateTests(unittest.TestCase):
             ("daily has an extra key", extra_daily_key),
             ("date is not a string", {**daily, "date": 20261105}),
             ("date is not valid", {**daily, "date": "2026-02-30"}),
+            ("date is not canonical", {**daily, "date": "20261105"}),
             ("successful is not an integer", {**daily, "successful": True}),
             ("successful is negative", {**daily, "successful": -1}),
             ("failed is not an integer", {**daily, "failed": False}),

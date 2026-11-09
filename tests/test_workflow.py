@@ -204,7 +204,7 @@ class WorkflowTests(unittest.TestCase):
     def test_workflow_dispatch_has_one_optional_scheduled_flag(self):
         workflow = WORKFLOW.read_text()
         dispatch = re.search(r"(?ms)^ +workflow_dispatch: *\n(.*?)(?=^\S|\Z)", workflow)
-        self.assertIsNotNone(dispatch)
+        assert dispatch is not None, "Workflow dispatch configuration is missing"
         self.assertRegex(dispatch[1], r"(?m)^ +scheduled: *$")
         self.assertEqual(re.findall(r"(?m)^ +type: *(\S+)", dispatch[1]), ["boolean"])
         self.assertEqual(re.findall(r"(?m)^ +default: *(\S+)", dispatch[1]), ["false"])
@@ -260,7 +260,7 @@ class WorkflowTests(unittest.TestCase):
             save = run_guarded_step(SAVE, root, env, outcome="skipped")
             self.assertIsNone(save)
             signal = run_guarded_step(SIGNAL, root, env, scheduled=True)
-            self.assertIsNotNone(signal)
+            assert signal is not None, "Health guard suppressed the signal"
             self.assertEqual(signal.returncode, 0)
             calls = (root / "calls").read_text().splitlines()
             self.assertEqual(calls, ["health https://health.example/check/fail"])
@@ -398,13 +398,13 @@ class WorkflowTests(unittest.TestCase):
                 )
                 outcome = "failure" if check.returncode else "success"
                 save = run_guarded_step(SAVE, root, env, outcome=outcome)
-                self.assertIsNotNone(save, "Save guard suppressed persistence")
+                assert save is not None, "Save guard suppressed persistence"
                 self.assertEqual(save.returncode, save_exit)
                 env["JOB_STATUS"] = (
                     "failure" if check.returncode or save.returncode else "success"
                 )
                 signal = run_guarded_step(SIGNAL, root, env, scheduled=True)
-                self.assertIsNotNone(signal, "Health guard suppressed the signal")
+                assert signal is not None, "Health guard suppressed the signal"
                 self.assertEqual(signal.returncode, 0)
                 calls = (root / "calls").read_text().splitlines()
                 self.assertEqual(calls[0], f"monitor {case}")
@@ -502,7 +502,25 @@ class WorkflowTests(unittest.TestCase):
 
     def test_changed_state_stages_and_commits_state_without_unrelated_files(self):
         real_git = shutil.which("git")
-        self.assertIsNotNone(real_git)
+        assert real_git is not None, (
+            "Git executable is required for the checkout fixture"
+        )
+        git_env = {
+            **{
+                key: value
+                for key, value in os.environ.items()
+                if not key.startswith("GIT_")
+            },
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": os.devnull,
+            "GIT_CONFIG_KEY_1": "commit.gpgSign",
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_TEMPLATE_DIR": "",
+        }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "checkout"
             root.mkdir()
@@ -514,20 +532,27 @@ class WorkflowTests(unittest.TestCase):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content)
-            subprocess.run([real_git, "init", "-q"], cwd=root, check=True)
+            subprocess.run([real_git, "init", "-q"], cwd=root, env=git_env, check=True)
             subprocess.run(
                 [real_git, "config", "user.name", "Workflow test"],
                 cwd=root,
+                env=git_env,
                 check=True,
             )
             subprocess.run(
                 [real_git, "config", "user.email", "workflow-test@example.invalid"],
                 cwd=root,
+                env=git_env,
                 check=True,
             )
-            subprocess.run([real_git, "add", "--all"], cwd=root, check=True)
             subprocess.run(
-                [real_git, "commit", "-qm", "initial fixture"], cwd=root, check=True
+                [real_git, "add", "--all"], cwd=root, env=git_env, check=True
+            )
+            subprocess.run(
+                [real_git, "commit", "-qm", "initial fixture"],
+                cwd=root,
+                env=git_env,
+                check=True,
             )
             (root / "data/state.json").write_text("updated state\n")
             (root / "config.env").write_text("changed synthetic private config\n")
@@ -549,7 +574,7 @@ class WorkflowTests(unittest.TestCase):
             )
             shim.chmod(0o755)
             env = {
-                **os.environ,
+                **git_env,
                 "PATH": f"{directory}:{os.environ['PATH']}",
                 "DEFAULT_BRANCH": "runner-default",
                 "REAL_GIT": real_git,
@@ -563,6 +588,7 @@ class WorkflowTests(unittest.TestCase):
             committed_paths = subprocess.run(
                 [real_git, "show", "--pretty=format:", "--name-only", "HEAD"],
                 cwd=root,
+                env=git_env,
                 check=True,
                 capture_output=True,
                 text=True,
@@ -572,6 +598,7 @@ class WorkflowTests(unittest.TestCase):
                 subprocess.run(
                     [real_git, "diff", "--cached", "--name-only"],
                     cwd=root,
+                    env=git_env,
                     check=True,
                     capture_output=True,
                     text=True,
@@ -582,6 +609,7 @@ class WorkflowTests(unittest.TestCase):
                 subprocess.run(
                     [real_git, "diff", "--name-only"],
                     cwd=root,
+                    env=git_env,
                     check=True,
                     capture_output=True,
                     text=True,

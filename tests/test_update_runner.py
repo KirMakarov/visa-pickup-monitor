@@ -59,10 +59,20 @@ class RunnerUpdateTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.git_env = {
-            **os.environ,
+            **{
+                key: value
+                for key, value in os.environ.items()
+                if not key.startswith("GIT_")
+            },
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": os.devnull,
+            "GIT_CONFIG_KEY_1": "commit.gpgSign",
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_TEMPLATE_DIR": "",
         }
         self.runner = self.create_runner("runner with spaces")
 
