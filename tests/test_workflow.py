@@ -17,6 +17,7 @@ WORKFLOW = (
     Path(__file__).resolve().parents[1]
     / "examples/github-actions/.github/workflows/monitor.yml"
 )
+RUNNER_GUIDE = WORKFLOW.parents[2] / "README.md"
 
 
 CHECK = "Check the pickup list"
@@ -209,6 +210,14 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(re.findall(r"(?m)^ +default: *(\S+)", dispatch[1]), ["false"])
         self.assertNotRegex(dispatch[1], r"(?m)^ +report:")
         self.assertNotRegex(workflow, r"(?m)^ *schedule:")
+
+    def test_operator_guide_keeps_external_schedule_contract_aligned(self):
+        guide = " ".join(RUNNER_GUIDE.read_text().split())
+        self.assertEqual(guide.count("`17 12-17 * * 1-4`"), 2)
+        self.assertIn("12:17, 13:17, 14:17, 15:17, 16:17, and 17:17", guide)
+        self.assertIn('{"ref":"DEFAULT_BRANCH","inputs":{"scheduled":"true"}}', guide)
+        self.assertIn("Create one job", guide)
+        self.assertIn("does not infer scheduled intent from its start time", guide)
 
     def test_save_guard_allows_only_non_cancelled_success_and_failure(self):
         cases = (
