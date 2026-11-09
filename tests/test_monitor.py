@@ -1,5 +1,7 @@
 import json
 import os
+import subprocess
+import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
@@ -287,6 +289,15 @@ class ScriptTests(unittest.TestCase):
             )
         return result, stdout.getvalue(), stderr.getvalue()
 
+    def run_cli(self, cwd, *arguments, env=None):
+        return subprocess.run(
+            [sys.executable, "-B", str(Path(monitor.__file__).resolve()), *arguments],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
     def responses(self, pdf, pdf_name="current.pdf"):
         html = f'<a href="{pdf_name}">Abholliste</a>'.encode()
         return [
@@ -333,7 +344,43 @@ class ScriptTests(unittest.TestCase):
         )
         self.assertEqual(result, 0)
         self.assertNotIn(": found in pickup list", stdout)
+        self.assertIn("123456: not found in pickup list", stdout)
+        self.assertIn("000123: not found in pickup list", stdout)
         self.assertEqual(stderr, "")
+
+    def test_monitor_cli_help_unknown_argument_and_configuration_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = {"PATH": os.environ.get("PATH", "")}
+            help_result = self.run_cli(root, "--help", env=env)
+            self.assertEqual(help_result.returncode, 0)
+            self.assertIn("usage:", help_result.stdout.lower())
+            self.assertEqual(help_result.stderr, "")
+
+            unknown_result = self.run_cli(root, "--unknown-option", env=env)
+            self.assertEqual(unknown_result.returncode, 2)
+            self.assertIn("unrecognized arguments", unknown_result.stderr)
+            self.assertNotIn("Traceback", unknown_result.stderr)
+
+        cases = (
+            ("missing", "PAGE_URL=http://127.0.0.1:1/pickup\n", {}),
+            (
+                "empty",
+                "PAGE_URL=http://127.0.0.1:1/pickup\nNUMBERS=123456\n",
+                {"NUMBERS": ""},
+            ),
+        )
+        for name, dotenv, overrides in cases:
+            with self.subTest(numbers=name), TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / ".env").write_text(dotenv, encoding="utf-8")
+                env = {"PATH": os.environ.get("PATH", ""), **overrides}
+                result = self.run_cli(root, env=env)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("Set NUMBERS", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertFalse((root / "data/state.json").exists())
 
     def test_unique_numbers_on_every_pdf_page_are_found(self):
         pdf = make_pdf(
