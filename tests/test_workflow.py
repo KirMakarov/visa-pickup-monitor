@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -142,6 +143,45 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(values), 1, f"Expected one workflow setting: {key}")
         self.assertEqual("".join(values[0].split()), "".join(expected.split()))
 
+    def run_health_signal(
+        self,
+        *,
+        status="success",
+        health_url="https://health.example/synthetic-secret/",
+        response="OK",
+        http_status="200",
+        curl_exit="0",
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "checkout"
+            root.mkdir()
+            curl_log = Path(directory) / "curl.log"
+            (root / "curl").write_text(
+                '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CURL_LOG"\n'
+                'printf "%s\\n%s" "$FAKE_RESPONSE" "$FAKE_STATUS"\n'
+                'exit "$CURL_EXIT"\n'
+            )
+            (root / "curl").chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{root}:{os.environ['PATH']}",
+                "CURL_LOG": str(curl_log),
+                "HEALTHCHECKS_PING_URL": health_url,
+                "JOB_STATUS": status,
+                "FAKE_RESPONSE": response,
+                "FAKE_STATUS": http_status,
+                "CURL_EXIT": curl_exit,
+            }
+            result = subprocess.run(
+                ["bash", "-e", "-c", step_script(SIGNAL)],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            calls = curl_log.read_text().splitlines() if curl_log.exists() else []
+            return result, calls
+
     def test_health_signal_follows_core_steps_and_binds_final_job_status(self):
         workflow = WORKFLOW.read_text()
         signal = step_definition(SIGNAL)
@@ -250,64 +290,75 @@ class WorkflowTests(unittest.TestCase):
         self.assert_setting(checkout, "persist-credentials", "false", indent=2)
 
     def test_health_signals_final_outcome_and_rejects_failed_transport(self):
-        script = step_script("Signal final hosted outcome")
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "curl").write_text(
-                '#!/bin/sh\nprintf "%s\\n" "$*" >> calls\n'
-                'printf "%s" "${FAKE_RESPONSE:-OK}"\n'
-                'printf "\\n%s" "${FAKE_STATUS:-200}"\nexit "${CURL_EXIT:-0}"\n'
-            )
-            (root / "curl").chmod(0o755)
-            env = {
-                **os.environ,
-                "PATH": f"{root}:{os.environ['PATH']}",
-                "HEALTHCHECKS_PING_URL": "",
-                "JOB_STATUS": "success",
-            }
-
-            def run():
-                return subprocess.run(
-                    ["bash", "-e", "-c", script],
-                    cwd=root,
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                )
-
-            self.assertEqual(run().returncode, 0)
-            self.assertFalse((root / "calls").exists())
-            env["HEALTHCHECKS_PING_URL"] = "https://health.example/synthetic-secret/"
-            self.assertEqual(run().returncode, 0)
-            self.assertTrue(
-                (root / "calls")
-                .read_text()
-                .strip()
-                .endswith("https://health.example/synthetic-secret")
-            )
-            for status in ("failure", "cancelled"):
-                with self.subTest(status=status):
-                    env["JOB_STATUS"] = status
-                    self.assertEqual(run().returncode, 0)
-                    self.assertTrue(
-                        (root / "calls")
-                        .read_text()
-                        .strip()
-                        .endswith("https://health.example/synthetic-secret/fail")
-                    )
-            for changes in (
-                {"FAKE_RESPONSE": "OK (not found)"},
-                {"FAKE_RESPONSE": "OK (rate limited)"},
-                {"FAKE_STATUS": "500"},
-                {"CURL_EXIT": "28"},
+        cases = (
+            ("success", "OK", "200", "0", "https://health.example/synthetic-secret"),
+            (
+                "failure",
+                "OK",
+                "200",
+                "0",
+                "https://health.example/synthetic-secret/fail",
+            ),
+            (
+                "success",
+                "OK (not found)",
+                "200",
+                "0",
+                "https://health.example/synthetic-secret",
+            ),
+            (
+                "failure",
+                "OK",
+                "500",
+                "0",
+                "https://health.example/synthetic-secret/fail",
+            ),
+            (
+                "success",
+                "OK",
+                "200",
+                "28",
+                "https://health.example/synthetic-secret",
+            ),
+        )
+        for status, response, http_status, curl_exit, expected_url in cases:
+            with self.subTest(
+                status=status,
+                response=response,
+                http_status=http_status,
+                curl_exit=curl_exit,
             ):
-                with self.subTest(changes=changes):
-                    env.update(changes)
-                    result = run()
+                result, calls = self.run_health_signal(
+                    status=status,
+                    response=response,
+                    http_status=http_status,
+                    curl_exit=curl_exit,
+                )
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(
+                    calls[0],
+                    "--silent --max-time 15 --write-out \\n%{http_code} "
+                    + expected_url,
+                )
+                if (response, http_status, curl_exit) == ("OK", "200", "0"):
+                    self.assertEqual(result.returncode, 0)
+                else:
                     self.assertNotEqual(result.returncode, 0)
                     self.assertNotIn("synthetic-secret", result.stdout + result.stderr)
-                    for key in changes:
-                        del env[key]
+                    self.assertIn("Healthchecks", result.stderr)
+
+        result, calls = self.run_health_signal(health_url="")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+
+    def test_cancelled_guard_and_direct_shell_signal_are_separate(self):
+        self.assertFalse(step_enabled(SIGNAL, scheduled=True, cancelled=True))
+        result, calls = self.run_health_signal(status="cancelled")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(
+            calls[0].endswith("https://health.example/synthetic-secret/fail")
+        )
 
     def test_scheduled_lifecycle_signals_after_required_actions(self):
         cases = (
@@ -338,14 +389,15 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(signal.returncode, 0)
                 calls = (root / "calls").read_text().splitlines()
                 self.assertEqual(calls[0], f"monitor {case}")
-                self.assertTrue(calls[1].startswith("git add "))
+                self.assertEqual(calls[1], "git add -- data/state.json")
                 self.assertEqual(
                     calls[-1],
                     "health https://health.example/check"
                     + ("/fail" if case in ("monitor", "commit", "push") else ""),
                 )
                 self.assertEqual(
-                    any(line.startswith("git push") for line in calls), case != "commit"
+                    [line for line in calls if line.startswith("git push")],
+                    [] if case == "commit" else ["git push origin HEAD:runner-default"],
                 )
 
     def test_scheduled_and_manual_runs_invoke_expected_monitor_cli(self):
@@ -417,10 +469,111 @@ class WorkflowTests(unittest.TestCase):
             (root / "data").mkdir()
             (root / "data/state.json").write_text("{}")
             self.assertEqual(run(), 0)
-            self.assertNotIn("push", (root / "calls").read_text())
+            unchanged_calls = (root / "calls").read_text().splitlines()
+            self.assertFalse(any("commit" in line for line in unchanged_calls))
+            self.assertFalse(any(line.startswith("push ") for line in unchanged_calls))
             env.update(DIFF_EXIT="1", PUSH_EXIT="1")
             self.assertNotEqual(run(), 0)
-            self.assertIn("push origin HEAD:main", (root / "calls").read_text())
+            changed_calls = (root / "calls").read_text().splitlines()
+            self.assertTrue(any(" commit " in line for line in changed_calls))
+            self.assertEqual(
+                [line for line in changed_calls if line.startswith("push ")],
+                ["push origin HEAD:main"],
+            )
+
+    def test_changed_state_stages_and_commits_state_without_unrelated_files(self):
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "checkout"
+            root.mkdir()
+            for name, content in (
+                ("data/state.json", "initial state\n"),
+                ("config.env", "synthetic private config\n"),
+                ("notes.txt", "initial notes\n"),
+            ):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
+            subprocess.run([real_git, "init", "-q"], cwd=root, check=True)
+            subprocess.run(
+                [real_git, "config", "user.name", "Workflow test"],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run(
+                [real_git, "config", "user.email", "workflow-test@example.invalid"],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run([real_git, "add", "--all"], cwd=root, check=True)
+            subprocess.run(
+                [real_git, "commit", "-qm", "initial fixture"], cwd=root, check=True
+            )
+            (root / "data/state.json").write_text("updated state\n")
+            (root / "config.env").write_text("changed synthetic private config\n")
+            (root / "notes.txt").write_text("changed notes\n")
+
+            command_log = Path(directory) / "git-commands.log"
+            staged_paths = Path(directory) / "staged-paths.txt"
+            shim = Path(directory) / "git"
+            shim.write_text(
+                "#!/bin/sh\n"
+                'printf "%s\\n" "$*" >> "$GIT_COMMAND_LOG"\n'
+                'if [ "$1" = push ]; then exit "${PUSH_EXIT:-0}"; fi\n'
+                "is_commit=0\n"
+                'for arg; do [ "$arg" = commit ] && is_commit=1; done\n'
+                'if [ "$is_commit" -eq 1 ]; then\n'
+                '  "$REAL_GIT" diff --cached --name-only > "$STAGED_PATHS"\n'
+                "fi\n"
+                'exec "$REAL_GIT" "$@"\n'
+            )
+            shim.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{directory}:{os.environ['PATH']}",
+                "DEFAULT_BRANCH": "runner-default",
+                "REAL_GIT": real_git,
+                "GIT_COMMAND_LOG": str(command_log),
+                "STAGED_PATHS": str(staged_paths),
+            }
+            result = run_step(SAVE, root, env)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(staged_paths.read_text().splitlines(), ["data/state.json"])
+            committed_paths = subprocess.run(
+                [real_git, "show", "--pretty=format:", "--name-only", "HEAD"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.splitlines()
+            self.assertEqual(committed_paths, ["data/state.json"])
+            self.assertEqual(
+                subprocess.run(
+                    [real_git, "diff", "--cached", "--name-only"],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.splitlines(),
+                [],
+            )
+            self.assertEqual(
+                subprocess.run(
+                    [real_git, "diff", "--name-only"],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.splitlines(),
+                ["config.env", "notes.txt"],
+            )
+            commands = command_log.read_text().splitlines()
+            self.assertEqual(
+                [line for line in commands if line.startswith("push ")],
+                ["push origin HEAD:runner-default"],
+            )
 
 
 if __name__ == "__main__":
