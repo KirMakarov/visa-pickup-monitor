@@ -171,6 +171,22 @@ class EntryTests(unittest.TestCase):
         text = "123456 31.02.2026 08:00-10:00\n123456 10.11.2026 25:00-26:00\n"
         self.assertEqual(monitor.parse_numbers(text), set())
 
+    def test_each_invalid_pickup_field_is_rejected_independently(self):
+        invalid_entries = (
+            "123456 31.02.2026 08:00-10:00",
+            "123456 10.11.2026 25:00-10:00",
+            "123456 10.11.2026 08:00-25:00",
+        )
+        for entry in invalid_entries:
+            with self.subTest(entry=entry):
+                self.assertEqual(monitor.parse_numbers(entry), set())
+        self.assertEqual(
+            monitor.parse_numbers(
+                "123456 01.01.2020 08:00-10:00\n000123 01.01.2099 08:00-10:00"
+            ),
+            {"123456", "000123"},
+        )
+
     def test_extracts_all_pages_from_a_real_pdf_structure(self):
         pdf = make_pdf(
             "123456 01.01.2020 08:00-10:00\nExplanatory footer",
@@ -215,14 +231,30 @@ class ScriptTests(unittest.TestCase):
         chat_id="456",
         bot_token="123:test",
         requests=None,
+        expected_requests=None,
+        sleeps=None,
     ):
         stdout, stderr = StringIO(), StringIO()
         settings = {"PAGE_URL": "https://embassy.example/start", "NUMBERS": numbers}
         if telegram:
             settings.update(TELEGRAM_BOT_TOKEN=bot_token, TELEGRAM_CHAT_ID=chat_id)
         response_iter = iter(responses)
+        request_log = []
+        route_errors = []
 
         def respond(request, **kwargs):
+            request_log.append(request)
+            if expected_requests is not None:
+                request_index = len(request_log) - 1
+                if request_index >= len(expected_requests):
+                    route_errors.append(f"Unexpected HTTP request: {request.full_url}")
+                else:
+                    expected_url = expected_requests[request_index]
+                    if request.full_url != expected_url:
+                        route_errors.append(
+                            f"HTTP request {request_index + 1} was "
+                            f"{request.full_url}; expected {expected_url}"
+                        )
             if requests is not None:
                 requests.append(request)
             response = next(response_iter)
@@ -234,12 +266,25 @@ class ScriptTests(unittest.TestCase):
             patch.dict(os.environ, settings, clear=True),
             patch("monitor.dotenv_values", return_value={}),
             patch("monitor.urlopen", side_effect=respond),
-            patch("monitor.sleep"),
+            patch(
+                "monitor.sleep",
+                side_effect=(lambda delay: sleeps.append(delay))
+                if sleeps is not None
+                else None,
+            ),
             patch("monitor.belgrade_date", return_value=today),
             redirect_stdout(stdout),
             redirect_stderr(stderr),
         ):
             result = monitor.main(self.state_path)
+        if expected_requests is not None:
+            if route_errors:
+                self.fail("; ".join(route_errors))
+            self.assertEqual(
+                len(request_log),
+                len(expected_requests),
+                "Not all expected HTTP requests were made",
+            )
         return result, stdout.getvalue(), stderr.getvalue()
 
     def responses(self, pdf, pdf_name="current.pdf"):
@@ -289,6 +334,195 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertNotIn(": found in pickup list", stdout)
         self.assertEqual(stderr, "")
+
+    def test_unique_numbers_on_every_pdf_page_are_found(self):
+        pdf = make_pdf(
+            "123456 01.01.2020 08:00-10:00",
+            "000123 01.01.2099 08:00-10:00",
+            "654321 10.11.2026 08:00-10:00",
+        )
+        result, stdout, stderr = self.run_script(
+            self.responses(pdf),
+            numbers="123456,000123,654321",
+            expected_requests=[
+                "https://embassy.example/start",
+                "https://embassy.example/service/current.pdf",
+            ],
+        )
+        self.assertEqual(result, 0)
+        for number in ("123456", "000123", "654321"):
+            self.assertIn(f"{number}: found in pickup list", stdout)
+        self.assertEqual(stderr, "")
+
+    def test_redirected_page_resolves_relative_pdf_from_effective_url(self):
+        pdf_url = "https://embassy.example/redirected/files/current.pdf"
+        requests = []
+        responses = [
+            Response(
+                b'<a href="../files/current.pdf">Abholliste</a>',
+                "https://embassy.example/redirected/service/index.html",
+            ),
+            Response(
+                make_pdf("123456 01.01.2020 08:00-10:00"),
+                "https://cdn.example/pickup/current.pdf",
+            ),
+        ]
+        result, stdout, stderr = self.run_script(
+            responses,
+            numbers="123456",
+            requests=requests,
+            expected_requests=["https://embassy.example/start", pdf_url],
+        )
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            [request.full_url for request in requests],
+            [
+                "https://embassy.example/start",
+                pdf_url,
+            ],
+        )
+        self.assertIn("PDF: https://cdn.example/pickup/current.pdf", stdout)
+        self.assertEqual(stderr, "")
+
+    def test_pdf_redirect_url_is_saved_and_included_in_notification(self):
+        requested_pdf = "https://embassy.example/service/current.pdf"
+        actual_pdf = "https://cdn.example/archive/pickup-2026.pdf"
+        requests = []
+        responses = [
+            Response(
+                b'<a href="current.pdf">Abholliste</a>',
+                "https://embassy.example/service/",
+            ),
+            Response(make_pdf("123456 01.01.2020 08:00-10:00"), actual_pdf),
+            Response(
+                b'{"ok":true,"result":{"message_id":1}}',
+                "https://api.telegram.org/",
+            ),
+        ]
+        result, _, stderr = self.run_script(
+            responses,
+            numbers="123456",
+            telegram=True,
+            requests=requests,
+            expected_requests=[
+                "https://embassy.example/start",
+                requested_pdf,
+                "https://api.telegram.org/bot123:test/sendMessage",
+            ],
+        )
+        self.assertEqual(result, 0)
+        self.assertEqual(stderr, "")
+        state = monitor.load_state(self.state_path)
+        self.assertEqual(state.found_numbers["123456"], actual_pdf)
+        self.assertNotEqual(requested_pdf, actual_pdf)
+        message = json.loads(requests[-1].data.decode("utf-8"))["text"]
+        self.assertIn(actual_pdf, message)
+
+    def test_temporary_source_and_pdf_download_failures_are_retried(self):
+        page_url = "https://embassy.example/start"
+        pdf_url = "https://embassy.example/service/current.pdf"
+        scenarios = (
+            (
+                [
+                    URLError("temporary source failure"),
+                    Response(
+                        b'<a href="current.pdf">Abholliste</a>',
+                        "https://embassy.example/service/",
+                    ),
+                    Response(make_pdf("123456 01.01.2020 08:00-10:00"), pdf_url),
+                ],
+                [page_url, page_url, pdf_url],
+            ),
+            (
+                [
+                    Response(
+                        b'<a href="current.pdf">Abholliste</a>',
+                        "https://embassy.example/service/",
+                    ),
+                    URLError("temporary PDF failure"),
+                    Response(make_pdf("123456 01.01.2020 08:00-10:00"), pdf_url),
+                ],
+                [page_url, pdf_url, pdf_url],
+            ),
+        )
+        for index, (responses, expected_urls) in enumerate(scenarios):
+            with self.subTest(expected_urls=expected_urls):
+                self.state_path = Path(self.temp.name) / f"retry-{index}.json"
+                requests, sleeps = [], []
+                result, _, stderr = self.run_script(
+                    responses,
+                    numbers="123456",
+                    requests=requests,
+                    expected_requests=expected_urls,
+                    sleeps=sleeps,
+                )
+                self.assertEqual(result, 0)
+                self.assertEqual(stderr, "")
+                self.assertEqual(len(requests), 3)
+                self.assertEqual(sleeps, [1])
+
+    def test_non_utf8_page_and_failed_pdf_do_not_complete_or_cache_check(self):
+        failures = (
+            (
+                [
+                    Response(b"\xff", "https://embassy.example/service/"),
+                ],
+                ["https://embassy.example/start"],
+                "not valid UTF-8",
+            ),
+            (
+                [
+                    Response(
+                        b'<a href="current.pdf">Abholliste</a>',
+                        "https://embassy.example/service/",
+                    ),
+                    URLError("offline"),
+                    URLError("offline"),
+                    URLError("offline"),
+                ],
+                [
+                    "https://embassy.example/start",
+                    "https://embassy.example/service/current.pdf",
+                    "https://embassy.example/service/current.pdf",
+                    "https://embassy.example/service/current.pdf",
+                ],
+                "Could not download the pickup-list PDF",
+            ),
+        )
+        for index, (responses, expected_urls, error) in enumerate(failures):
+            with self.subTest(error=error):
+                self.state_path = (
+                    Path(self.temp.name) / f"download-failure-{index}.json"
+                )
+                requests = []
+                result, stdout, stderr = self.run_script(
+                    responses,
+                    numbers="123456",
+                    requests=requests,
+                    expected_requests=expected_urls,
+                )
+                self.assertEqual(result, 1)
+                self.assertEqual(stdout, "")
+                self.assertIn(error, stderr)
+                self.assertNotIn("123456: not found", stdout)
+                self.assertIsNone(
+                    monitor.load_state(self.state_path).last_processed_date
+                )
+                self.assertEqual(len(requests), len(expected_urls))
+                recovered, _, recovery_stderr = self.run_script(
+                    self.responses(make_pdf("123456 01.01.2020 08:00-10:00")),
+                    numbers="123456",
+                    expected_requests=[
+                        "https://embassy.example/start",
+                        "https://embassy.example/service/current.pdf",
+                    ],
+                )
+                self.assertEqual(recovered, 0)
+                self.assertEqual(recovery_stderr, "")
+                self.assertEqual(
+                    monitor.load_state(self.state_path).last_processed_date,
+                    "2026-11-05",
+                )
 
     def test_download_failures_return_error_without_false_absence_results(self):
         failures = (
@@ -348,9 +582,13 @@ class ScriptTests(unittest.TestCase):
         self.run_script(
             self.responses(make_pdf("123456 01.01.2020 08:00-10:00")), numbers="123456"
         )
-        result, stdout, _ = self.run_script([], numbers="123456")
+        requests = []
+        result, stdout, _ = self.run_script(
+            [], numbers="123456", requests=requests, expected_requests=[]
+        )
         self.assertEqual(result, 0)
         self.assertIn("Monitoring complete", stdout)
+        self.assertEqual(requests, [])
 
     def test_added_target_reopens_monitoring_and_invalidates_same_day_cache(self):
         pdf = make_pdf("123456 01.01.2020 08:00-10:00\n000123 01.01.2099 08:00-10:00")
@@ -719,7 +957,16 @@ class ScriptTests(unittest.TestCase):
         for version in (1, 2):
             with self.subTest(version=version):
                 self.write_legacy_state(version)
-                result, _, stderr = self.run_script([self.responses(b"")[0]])
+                result, _, stderr = self.run_script(
+                    [
+                        self.responses(b"")[0],
+                        Response(
+                            make_pdf("654321 01.01.2020 08:00-10:00"),
+                            "https://embassy.example/current.pdf",
+                        ),
+                    ],
+                    expected_requests=["https://embassy.example/start"],
+                )
                 self.assertEqual(result, 0)
                 self.assertEqual(stderr, "")
 
@@ -754,7 +1001,15 @@ class ScriptTests(unittest.TestCase):
             ):
                 self.write_legacy_state(version)
                 result, output, stderr = self.run_script(
-                    [self.responses(b"")[0]], telegram=True
+                    [
+                        self.responses(b"")[0],
+                        Response(
+                            make_pdf("654321 01.01.2020 08:00-10:00"),
+                            "https://embassy.example/current.pdf",
+                        ),
+                    ],
+                    telegram=True,
+                    expected_requests=["https://embassy.example/start"],
                 )
                 self.assertEqual(result, 0)
                 self.assertIn("already processed", output)
