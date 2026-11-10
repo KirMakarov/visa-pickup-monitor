@@ -95,6 +95,10 @@ Set local times to 12:17, 13:17, 14:17, 15:17, 16:17, and 17:17, with this JSON 
 {"ref":"DEFAULT_BRANCH","inputs":{"scheduled":"true"}}
 ```
 
+Keep `scheduled` set to `true`: this explicit input preserves scheduled intent if
+GitHub starts a run late. The workflow does not infer scheduled intent from its
+start time.
+
 Replace `DEFAULT_BRANCH` with the actual default branch. Configure the job before
 enabling it and verify its settings and time zone. The
 [GitHub dispatch API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)
@@ -136,7 +140,9 @@ production check.
 Create a production check at [Healthchecks.io](https://healthchecks.io/) using cron
 `17 12-17 * * 1-4`, time zone `Europe/Belgrade`, and a 30-minute grace period.
 Connect standard failure and recovery notifications to Telegram and a backup email
-address; leave extra periodic reminders disabled. Add the check's base ping URL as
+address; leave extra periodic reminders disabled. Healthchecks recovery is the
+agreed exception to findings-and-problems-only Telegram delivery; application
+recovery remains silent. Add the check's base ping URL as
 the private repository secret `HEALTHCHECKS_PING_URL`. Leave it unset to disable
 the integration. Keep the URL private: it is a credential.
 
