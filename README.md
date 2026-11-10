@@ -70,6 +70,11 @@ All scheduled checks behave alike. The runner can optionally signal scheduled ou
 
 ## Verify
 
+The launcher is `monitor.py`. The `visa_pickup_monitor` package separates monitoring history
+(`domain.py`), technical operations (`infrastructure.py`), and the monitoring
+check (`monitoring.py`). Application tests are grouped by configuration, source,
+monitoring, state, and Telegram; runner and workflow tests remain separate.
+
 Install the development tools in the same Python 3.14 virtual environment:
 
 ```sh

@@ -55,9 +55,9 @@ From the public monitor checkout, run the helper with the path to your existing
 private runner and the full SHA of the tested public version you have published:
 
 ```sh
-python3 scripts/update_runner.py ../vpm-runner --monitor-ref YOUR_PUBLISHED_COMMIT_SHA --dry-run
-python3 scripts/update_runner.py ../vpm-runner --monitor-ref YOUR_PUBLISHED_COMMIT_SHA
-git -C ../vpm-runner diff
+python3 scripts/update_runner.py ../visa-pickup-monitor-runner --monitor-ref YOUR_PUBLISHED_COMMIT_SHA --dry-run
+python3 scripts/update_runner.py ../visa-pickup-monitor-runner --monitor-ref YOUR_PUBLISHED_COMMIT_SHA
+git -C ../visa-pickup-monitor-runner diff
 ```
 
 Replace `YOUR_PUBLISHED_COMMIT_SHA` with the actual 40-character SHA. The helper
