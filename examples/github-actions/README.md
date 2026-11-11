@@ -20,7 +20,7 @@ Cron expression for the scheduled checks: `17 12-17 * * 1-4`.
    cp config.env.example config.env
    ```
 
-3. Edit `config.env` with your own `NUMBERS` and `PAGE_URL`. In the private repository's **Settings > Secrets and variables > Actions**, create both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as **repository secrets** to enable Telegram. Omit both secrets for console-only operation. In hosted mode, both Telegram settings come from Secrets; environment variables supplied by the workflow override `.env` values.
+3. Edit `config.env` with your own `NUMBERS` and `PAGE_URL`. In the private repository's **Settings > Secrets and variables > Actions**, create `TELEGRAM_BOT_TOKEN` and at least one of `TELEGRAM_CHAT_ID` (personal) or `TELEGRAM_BROADCAST_CHAT_ID` (broadcast) as **repository secrets** to enable Telegram. Omit all three for console-only operation. Leave `NUMBERS` empty for broadcast-only operation. For a channel, give the bot administrator permission to post; use its numeric ID or public `@username`. Verify access with a manual run and check the channel after a new pickup date is detected. In hosted mode, Telegram settings come from Secrets; environment variables supplied by the workflow override `.env` values.
 4. Set `MONITOR_REF` in `.github/workflows/monitor.yml` to the full SHA of the tested implementation after publishing it to the public `KirMakarov/visa-pickup-monitor` repository. Update the supplied SHA before using this version of the template.
 5. Commit and push the runner files yourself:
 
@@ -35,7 +35,7 @@ Cron expression for the scheduled checks: `17 12-17 * * 1-4`.
 
 The workflow must be present on the default branch for API dispatch and the manual-run button. It refuses to run in public repositories. Leave `scheduled` unchecked for an ordinary manual run; selecting it opts a dispatch into Healthchecks signaling.
 
-If Telegram configuration fails, check both repository secret names and confirm the private workflow references both under the check step's `env`. The check logs show only whether each secret is configured, without printing values. After pushing a workflow fix, start a new **Run workflow**. This template does not select a GitHub environment, so environment-scoped secrets require additional job configuration; use repository secrets for this setup. See GitHub's [secrets documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets).
+If Telegram configuration fails, check the repository secret names and confirm the private workflow references them under the check step's `env`. The check logs show only whether each secret is configured, without printing values. After pushing a workflow fix, start a new **Run workflow**. This template does not select a GitHub environment, so environment-scoped secrets require additional job configuration; use repository secrets for this setup. See GitHub's [secrets documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets).
 
 ## State and updates
 

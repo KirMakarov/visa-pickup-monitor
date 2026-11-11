@@ -40,7 +40,7 @@ On Windows, use `python` to create the environment, `Copy-Item .env.example .env
 
 ## Optional Telegram notifications
 
-Set both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` to enable notifications. Leave both empty to use the console only; incomplete configuration is an error. Create a bot with BotFather, send your bot a message, then use the official [getUpdates method](https://core.telegram.org/bots/api#getupdates) to find your `message.chat.id`.
+Set both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` to enable notifications. Leave all Telegram settings empty to use the console only; a token without a destination or a destination without a token is an error. Create a bot with BotFather, send your bot a message, then use the official [getUpdates method](https://core.telegram.org/bots/api#getupdates) to find your `message.chat.id`.
 
 Each match notification includes the application number and its discovery PDF link. Delivery is recorded only after Telegram confirms success. Temporary network and server failures receive up to three total attempts, with short delays. Telegram rate limits are respected; waits longer than 30 seconds defer delivery to a later run. Failed match notifications remain pending and are retried on subsequent runs, even if the source page is unavailable.
 
@@ -50,15 +50,23 @@ Errors are printed to stderr and also sent to Telegram when possible. An identic
 
 Successful checks without new or pending personal notifications send no routine Telegram message.
 
+## Optional broadcast of new pickup dates
+
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BROADCAST_CHAT_ID` to send news to a separate chat or channel. The destination can be a numeric chat or channel ID, or a public channel's `@username`. Add the bot to the channel as an administrator with permission to post. Check access with a manual run and verify delivery when a new pickup date is detected. `TELEGRAM_CHAT_ID` remains optional and receives personal notifications and technical errors; the broadcast receives only news. `NUMBERS` may be empty when broadcast is enabled.
+
+The first successfully read PDF is a silent baseline. Later checks send newly observed application number and pickup date pairs with all observed time intervals and the PDF link. Previously seen pairs are not repeated, including when only their time changes. Long lists are split into messages; undelivered parts remain pending and are retried even if the source is unavailable. Delivery confirmations are stored separately, so an interruption after Telegram accepts a message but before saving confirmation may cause a duplicate.
+
+Broadcast keeps checks active after personal monitoring completes. The same PDF URL is normally read once per calendar day in `Europe/Belgrade`; a new URL is read on the next run. A change that appears and disappears between readings can be missed. A run without `TELEGRAM_BROADCAST_CHAT_ID` disables broadcast; the first successful PDF after re-enabling becomes a new silent baseline, while previously pending messages are sent to the current destination. Pausing runs or changing the destination does not reset the baseline.
+
 ## State and repeated checks
 
 The script creates `data/state.json` automatically. It contains private discovery and notification history and is ignored by Git. It is written atomically. Invalid or unreadable state causes an error instead of resetting history; restore a valid copy before retrying. Deleting state discards deduplication history and can repeat notifications.
-Recognized version-1 and version-2 state upgrades automatically, retaining discovery and notification history, error suppression, and cache eligibility. Report-only fields are discarded.
+Recognized version-1, version-2 and version-3 state upgrades automatically, retaining discovery and notification history, error suppression, and cache eligibility. Report-only fields are discarded.
 
 - An unchanged PDF URL is downloaded and parsed once per calendar day in `Europe/Belgrade`. The source page is still checked on each active run.
 - A changed PDF URL or a newly added target not covered by the last successful processing triggers parsing immediately. Content replaced under the same URL after successful processing is detected on the following day.
 - Adding targets starts monitoring them; removing targets stops checking them while keeping their history. Console matches are printed only when first recorded.
-- Once all current targets have been found and any required match notifications sent, the script reports completion and makes no source-page or PDF requests. Adding targets or enabling Telegram resumes the required work automatically.
+- Without broadcast, once all current targets have been found and any required match notifications sent, the script reports completion and makes no source-page or PDF requests. Adding targets or enabling Telegram resumes the required work automatically.
 
 ## Run on GitHub Actions
 

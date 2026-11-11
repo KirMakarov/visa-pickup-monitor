@@ -59,15 +59,24 @@ def read_settings(env_path: str | Path = ".env") -> dict[str, str | None]:
 def load_telegram(settings: dict[str, str | None]) -> TelegramConfig | None:
     token = (settings.get("TELEGRAM_BOT_TOKEN") or "").strip()
     chat_id = (settings.get("TELEGRAM_CHAT_ID") or "").strip()
-    if not token and not chat_id:
+    broadcast_id = (settings.get("TELEGRAM_BROADCAST_CHAT_ID") or "").strip()
+    if not token and not chat_id and not broadcast_id:
         return None
-    if not token or not chat_id:
+    if not token or (not chat_id and not broadcast_id):
         raise MonitorError(
-            "Set both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID, or leave both empty."
+            "Set TELEGRAM_BOT_TOKEN and at least one Telegram destination, or leave all empty."
         )
     if re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", token) is None:
         raise MonitorError("TELEGRAM_BOT_TOKEN has an invalid format.")
-    return TelegramConfig(token, chat_id)
+    return TelegramConfig(token, chat_id) if chat_id else None
+
+
+def load_broadcast(settings: dict[str, str | None]) -> TelegramConfig | None:
+    chat_id = (settings.get("TELEGRAM_BROADCAST_CHAT_ID") or "").strip()
+    if not chat_id:
+        return None
+    load_telegram(settings)
+    return TelegramConfig((settings.get("TELEGRAM_BOT_TOKEN") or "").strip(), chat_id)
 
 
 def load_config(settings: dict[str, str | None]) -> tuple[str, tuple[str, ...]]:
@@ -79,6 +88,11 @@ def load_config(settings: dict[str, str | None]) -> tuple[str, tuple[str, ...]]:
     if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
         raise MonitorError("PAGE_URL must be an absolute HTTP or HTTPS URL.")
 
+    if (
+        not (settings.get("NUMBERS") or "").strip()
+        and (settings.get("TELEGRAM_BROADCAST_CHAT_ID") or "").strip()
+    ):
+        return page_url, ()
     numbers = tuple(
         number.strip() for number in (settings.get("NUMBERS") or "").split(",")
     )
@@ -103,9 +117,12 @@ def load_state(path: Path) -> State:  # noqa: C901
         if not isinstance(data, dict):
             raise ValueError
         version = data.pop("version", None)
-        if type(version) is not int or version not in (1, 2, 3):
+        if type(version) is not int or version not in (1, 2, 3, 4):
             raise ValueError
+        broadcast_keys = {"broadcast_baseline", "broadcast_seen", "broadcast_pending"}
         expected = set(asdict(State())) | ({"daily"} if version == 2 else set())
+        if version < 4:
+            expected -= broadcast_keys
         if set(data) != expected:
             raise ValueError
         daily = data.pop("daily", None)
@@ -139,6 +156,21 @@ def load_state(path: Path) -> State:  # noqa: C901
             ):
                 raise ValueError
         state = State(**data)
+        if type(state.broadcast_baseline) is not bool:
+            raise ValueError
+        if not isinstance(state.broadcast_seen, list) or any(
+            not isinstance(pair, str)
+            or re.fullmatch(r"[0-9]{6} [0-9]{2}\.[0-9]{2}\.[0-9]{4}", pair) is None
+            for pair in state.broadcast_seen
+        ):
+            raise ValueError
+        for pair in state.broadcast_seen:
+            datetime.strptime(pair[7:], "%d.%m.%Y")
+        if not isinstance(state.broadcast_pending, list) or any(
+            not isinstance(message, str) or not message or len(message) > 4096
+            for message in state.broadcast_pending
+        ):
+            raise ValueError
         for values in (state.last_targets, state.notified_numbers):
             if not isinstance(values, list) or any(
                 not isinstance(number, str) or NUMBER_PATTERN.fullmatch(number) is None
@@ -176,7 +208,7 @@ def load_state(path: Path) -> State:  # noqa: C901
 
 
 def save_state(state: State, path: Path) -> None:
-    data = {"version": 3, **asdict(state)}
+    data = {"version": 4, **asdict(state)}
     for name in ("last_targets", "notified_numbers", "error_notifications"):
         data[name] = sorted(data[name])
     payload = json.dumps(data, indent=2, sort_keys=True) + "\n"
@@ -340,8 +372,8 @@ def send_telegram(config: TelegramConfig, text: str) -> None:
     retry(send)
 
 
-def parse_numbers(text: str) -> set[str]:
-    numbers = set()
+def parse_entries(text: str) -> dict[str, list[str]]:
+    entries: dict[str, list[str]] = {}
     for number, pickup_date, start, end in ENTRY_PATTERN.findall(text):
         try:
             datetime.strptime(pickup_date, "%d.%m.%Y")
@@ -349,21 +381,35 @@ def parse_numbers(text: str) -> set[str]:
             datetime.strptime(end, "%H:%M")
         except ValueError:
             continue
-        numbers.add(number)
-    return numbers
+        intervals = entries.setdefault(f"{number} {pickup_date}", [])
+        interval = f"{start}-{end}"
+        if interval not in intervals:
+            intervals.append(interval)
+    return entries
 
 
-def extract_numbers(pdf: bytes) -> set[str]:
+def parse_numbers(text: str) -> set[str]:
+    return {pair[:6] for pair in parse_entries(text)}
+
+
+def extract_entries(pdf: bytes) -> dict[str, list[str]]:
     try:
         texts = [page.extract_text() or "" for page in PdfReader(BytesIO(pdf)).pages]
     except Exception as exc:
         raise MonitorError("Could not read the PDF or extract its text.") from exc
-
-    numbers = set()
+    entries: dict[str, list[str]] = {}
     for text in texts:
-        numbers.update(parse_numbers(text))
-    if not numbers:
+        for pair, intervals in parse_entries(text).items():
+            existing = entries.setdefault(pair, [])
+            existing.extend(
+                interval for interval in intervals if interval not in existing
+            )
+    if not entries:
         raise MonitorError(
             "The PDF contains no valid pickup entries; check its format."
         )
-    return numbers
+    return entries
+
+
+def extract_numbers(pdf: bytes) -> set[str]:
+    return {pair[:6] for pair in extract_entries(pdf)}

@@ -50,10 +50,12 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_BROADCAST_CHAT_ID: ${{ secrets.TELEGRAM_BROADCAST_CHAT_ID }}
         run: |
           cp config.env .env
           if [[ -n "$TELEGRAM_BOT_TOKEN" ]]; then echo 'TELEGRAM_BOT_TOKEN: configured'; else echo 'TELEGRAM_BOT_TOKEN: missing'; fi
           if [[ -n "$TELEGRAM_CHAT_ID" ]]; then echo 'TELEGRAM_CHAT_ID: configured'; else echo 'TELEGRAM_CHAT_ID: missing'; fi
+          if [[ -n "$TELEGRAM_BROADCAST_CHAT_ID" ]]; then echo 'TELEGRAM_BROADCAST_CHAT_ID: configured'; else echo 'TELEGRAM_BROADCAST_CHAT_ID: missing'; fi
           python -u monitor-code/monitor.py
 
       - name: Save state after a successful or failed check
