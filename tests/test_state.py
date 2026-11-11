@@ -8,6 +8,13 @@ from unittest.mock import patch
 from visa_pickup_monitor import infrastructure as monitor
 
 
+def legacy_state():
+    state = monitor.asdict(monitor.State())
+    for key in ("broadcast_baseline", "broadcast_seen", "broadcast_pending"):
+        del state[key]
+    return state
+
+
 class StateTests(unittest.TestCase):
     def test_atomic_save_failure_keeps_previous_state_and_removes_temporary_file(self):
         with TemporaryDirectory() as directory:
@@ -28,7 +35,7 @@ class StateTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).glob(".state-*.tmp")), [])
 
     def test_invalid_state_fields_are_rejected_independently(self):
-        baseline = {"version": 3, **monitor.asdict(monitor.State())}
+        baseline = {"version": 4, **monitor.asdict(monitor.State())}
         missing_version = baseline.copy()
         del missing_version["version"]
         missing_key = baseline.copy()
@@ -39,7 +46,7 @@ class StateTests(unittest.TestCase):
             ("version is missing", missing_version),
             ("state keys are missing", missing_key),
             ("state has an extra key", extra_key),
-            ("version is unsupported", {**baseline, "version": 4}),
+            ("version is unsupported", {**baseline, "version": 5}),
             ("boolean is not an integer version", {**baseline, "version": True}),
             ("fraction is not an integer version", {**baseline, "version": 3.0}),
             ("last targets are not a list", {**baseline, "last_targets": None}),
@@ -150,7 +157,7 @@ class StateTests(unittest.TestCase):
     def test_legacy_daily_fields_are_rejected_independently(self):
         baseline = {
             "version": 2,
-            **monitor.asdict(monitor.State()),
+            **legacy_state(),
             "daily": {
                 "date": "2026-11-05",
                 "successful": 2,
@@ -193,15 +200,15 @@ class StateTests(unittest.TestCase):
                         monitor.load_state(path)
 
     def test_supported_state_versions_load_and_legacy_daily_is_optional(self):
-        v1 = {"version": 1, **monitor.asdict(monitor.State())}
+        v1 = {"version": 1, **legacy_state()}
         v2_without_daily = {
             "version": 2,
-            **monitor.asdict(monitor.State()),
+            **legacy_state(),
             "daily": None,
         }
         v2_with_daily = {
             "version": 2,
-            **monitor.asdict(monitor.State()),
+            **legacy_state(),
             "daily": {
                 "date": "2026-11-05",
                 "successful": 2,
@@ -211,7 +218,7 @@ class StateTests(unittest.TestCase):
                 "report_delivered": False,
             },
         }
-        v3 = {"version": 3, **monitor.asdict(monitor.State())}
+        v3 = {"version": 3, **legacy_state()}
         with TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
             for data in (v1, v2_without_daily, v2_with_daily, v3):
