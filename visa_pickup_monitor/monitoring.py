@@ -9,8 +9,9 @@ from visa_pickup_monitor.infrastructure import (
     MonitorError,
     TelegramConfig,
     belgrade_date,
-    extract_numbers,
+    extract_entries,
     fetch,
+    load_broadcast,
     load_config,
     load_state,
     load_telegram,
@@ -22,7 +23,11 @@ from visa_pickup_monitor.infrastructure import (
 
 
 def check_pdf(
-    page_url: str, targets: tuple[str, ...], state: State, today: str
+    page_url: str,
+    targets: tuple[str, ...],
+    state: State,
+    today: str,
+    broadcast: bool = False,
 ) -> None:
     page, effective_page_url = fetch(page_url, "the source page")
     try:
@@ -30,12 +35,31 @@ def check_pdf(
     except UnicodeError as exc:
         raise MonitorError("The source page is not valid UTF-8 text.") from exc
     pdf_url = resolve_pdf_url(html, effective_page_url)
-    if state.cache_applies(pdf_url, today, targets):
+    if (not broadcast or state.broadcast_baseline) and state.cache_applies(
+        pdf_url, today, targets
+    ):
         print("PDF unchanged; already processed today.")
         return
 
     pdf, effective_pdf_url = fetch(pdf_url, "the pickup-list PDF")
-    numbers = extract_numbers(pdf)
+    entries = extract_entries(pdf)
+    numbers = {pair[:6] for pair in entries}
+    if broadcast and (
+        not state.broadcast_baseline
+        or state.last_pdf_url != pdf_url
+        or state.last_processed_date != today
+    ):
+        new_entries = {
+            pair: intervals
+            for pair, intervals in entries.items()
+            if pair not in state.broadcast_seen
+        }
+        if state.broadcast_baseline and new_entries:
+            state.broadcast_pending.extend(
+                broadcast_messages(new_entries, effective_pdf_url)
+            )
+        state.broadcast_seen.extend(new_entries)
+        state.broadcast_baseline = True
     print(f"PDF: {effective_pdf_url}")
     print(f"Valid application numbers: {len(numbers)}")
     for target in targets:
@@ -47,6 +71,25 @@ def check_pdf(
     state.last_pdf_url = pdf_url
     state.last_processed_date = today
     state.last_targets = list(targets)
+
+
+def broadcast_messages(entries: dict[str, list[str]], pdf_url: str) -> list[str]:
+    header = "New pickup dates:\n"
+    footer = f"\nPDF: {pdf_url}"
+    messages: list[str] = []
+    current = header
+    for pair, intervals in entries.items():
+        for interval in intervals:
+            line = f"{pair} {interval}\n"
+            if len(current) + len(line) + len(footer) > 4096:
+                if current == header:
+                    raise MonitorError("PDF URL is too long for a Telegram message.")
+                messages.append(current.rstrip() + footer)
+                current = header
+            current += line
+    if current != header:
+        messages.append(current.rstrip() + footer)
+    return messages
 
 
 def report_errors(
@@ -82,20 +125,35 @@ def main(state_path: Path = STATE_PATH) -> int:  # noqa: C901
     saving_failed = False
     try:
         settings = read_settings()
-        telegram = load_telegram(settings)
+        telegram_error = None
+        try:
+            telegram = load_telegram(settings)
+        except MonitorError as exc:
+            telegram_error = exc
         state = load_state(state_path)
+        if (
+            not (settings.get("TELEGRAM_BROADCAST_CHAT_ID") or "").strip()
+            and state.broadcast_baseline
+        ):
+            state.broadcast_baseline = False
+            saving_failed = True
+            save_state(state, state_path)
+            saving_failed = False
+        if telegram_error is not None:
+            raise telegram_error
+        broadcast = load_broadcast(settings)
         page_url, targets = load_config(settings)
         complete = state.is_complete(targets, telegram is not None)
-        if complete:
+        if complete and broadcast is None:
             saving_failed = True
             save_state(state, state_path)
             saving_failed = False
             print("Monitoring complete for the current target numbers.")
             return 0
         today = belgrade_date()
-        if not state.all_found(targets):
+        if broadcast is not None or not state.all_found(targets):
             try:
-                check_pdf(page_url, targets, state, today)
+                check_pdf(page_url, targets, state, today, broadcast is not None)
             except MonitorError as exc:
                 errors.append(exc)
 
@@ -117,6 +175,18 @@ def main(state_path: Path = STATE_PATH) -> int:  # noqa: C901
                     errors.append(exc)
                     break
                 state.notified_numbers.append(number)
+                saving_failed = True
+                save_state(state, state_path)
+                saving_failed = False
+
+        if broadcast is not None:
+            while state.broadcast_pending:
+                try:
+                    send_telegram(broadcast, state.broadcast_pending[0])
+                except MonitorError as exc:
+                    errors.append(exc)
+                    break
+                state.broadcast_pending.pop(0)
                 saving_failed = True
                 save_state(state, state_path)
                 saving_failed = False

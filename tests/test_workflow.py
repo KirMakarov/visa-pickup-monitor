@@ -107,6 +107,7 @@ def prepare_workflow_checkout(root, case="success"):
             "config": Path(".env").read_text(),
             "token": os.environ.get("TELEGRAM_BOT_TOKEN"),
             "chat": os.environ.get("TELEGRAM_CHAT_ID"),
+            "broadcast": os.environ.get("TELEGRAM_BROADCAST_CHAT_ID"),
         }))
         Path("data/state.json").write_text(json.dumps({"synthetic_outcome": case}))
         print("Monitoring complete." if case == "completed" else "Synthetic check executed.")
@@ -132,6 +133,7 @@ def prepare_workflow_checkout(root, case="success"):
         "DEFAULT_BRANCH": "runner-default",
         "TELEGRAM_BOT_TOKEN": "123:workflow-test-token",
         "TELEGRAM_CHAT_ID": "-789",
+        "TELEGRAM_BROADCAST_CHAT_ID": "@workflow-test",
         "HEALTHCHECKS_PING_URL": "https://health.example/check",
     }
 
@@ -268,7 +270,11 @@ class WorkflowTests(unittest.TestCase):
     def test_monitor_step_binds_current_telegram_secrets_and_check_outcome(self):
         check = step_definition(CHECK)
         self.assert_setting(check, "id", "check")
-        for setting in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+        for setting in (
+            "TELEGRAM_BOT_TOKEN",
+            "TELEGRAM_CHAT_ID",
+            "TELEGRAM_BROADCAST_CHAT_ID",
+        ):
             self.assert_setting(
                 check, setting, f"${{{{ secrets.{setting} }}}}", indent=2
             )
@@ -454,6 +460,7 @@ class WorkflowTests(unittest.TestCase):
                     for key, setting in (
                         ("token", "TELEGRAM_BOT_TOKEN"),
                         ("chat", "TELEGRAM_CHAT_ID"),
+                        ("broadcast", "TELEGRAM_BROADCAST_CHAT_ID"),
                     ):
                         self.assertTrue(
                             probe[key] == env[setting],

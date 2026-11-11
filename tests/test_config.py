@@ -42,6 +42,22 @@ class ConfigTests(unittest.TestCase):
                 with self.assertRaisesRegex(monitor.MonitorError, "NUMBERS"):
                     monitor.load_config(monitor.read_settings(self.env_path))
 
+    def test_broadcast_only_and_combined_configuration(self):
+        settings = {
+            "TELEGRAM_BOT_TOKEN": "123:test",
+            "TELEGRAM_BROADCAST_CHAT_ID": "@news",
+            "NUMBERS": "",
+        }
+        self.assertEqual(monitor.load_config(settings)[1], ())
+        self.assertIsNone(monitor.load_telegram(settings))
+        self.assertEqual(monitor.load_broadcast(settings).chat_id, "@news")
+        settings["TELEGRAM_CHAT_ID"] = "-123"
+        self.assertEqual(monitor.load_telegram(settings).chat_id, "-123")
+        self.assertEqual(monitor.load_broadcast(settings).chat_id, "@news")
+        del settings["TELEGRAM_BOT_TOKEN"]
+        with self.assertRaises(monitor.MonitorError):
+            monitor.load_broadcast(settings)
+
     def test_invalid_source_urls_are_configuration_errors(self):
         for url in (
             "file:///tmp/page.html",

@@ -29,6 +29,7 @@ class ScriptTests(unittest.TestCase):
         responses,
         numbers="123456,000123",
         telegram=False,
+        broadcast=None,
         today="2026-11-05",
         chat_id="456",
         bot_token="123:test",
@@ -40,6 +41,10 @@ class ScriptTests(unittest.TestCase):
         settings = {"PAGE_URL": "https://embassy.example/start", "NUMBERS": numbers}
         if telegram:
             settings.update(TELEGRAM_BOT_TOKEN=bot_token, TELEGRAM_CHAT_ID=chat_id)
+        if broadcast is not None:
+            settings.update(
+                TELEGRAM_BOT_TOKEN=bot_token, TELEGRAM_BROADCAST_CHAT_ID=broadcast
+            )
         response_iter = iter(responses)
         request_log = []
 
@@ -85,6 +90,258 @@ class ScriptTests(unittest.TestCase):
                 "Not all expected HTTP requests were made",
             )
         return result, stdout.getvalue(), stderr.getvalue()
+
+    def test_broadcast_baseline_new_dates_and_daily_cache(self):
+        def ok():
+            return Response(b'{"ok":true}', "https://api.telegram.org/")
+
+        initial = make_pdf("123456 01.01.2027 08:00-10:00")
+        self.assertEqual(
+            self.run_script(self.responses(initial), numbers="", broadcast="@news")[0],
+            0,
+        )
+        self.assertTrue(monitor.load_state(self.state_path).broadcast_baseline)
+        later = make_pdf(
+            "123456 01.01.2027 10:00-11:00\n123456 02.01.2027 08:00-09:00",
+            "123456 02.01.2027 10:00-11:00",
+        )
+        requests = []
+        self.assertEqual(
+            self.run_script(
+                self.responses(later, "new.pdf") + [ok()],
+                numbers="",
+                broadcast="@news",
+                requests=requests,
+            )[0],
+            0,
+        )
+        message = json.loads(requests[-1].data)
+        self.assertEqual(message["chat_id"], "@news")
+        self.assertIn("02.01.2027 08:00-09:00", message["text"])
+        self.assertIn("02.01.2027 10:00-11:00", message["text"])
+        self.assertNotIn("01.01.2027", message["text"])
+        self.assertIn("new.pdf", message["text"])
+        self.assertEqual(
+            self.run_script(
+                [self.responses(later, "new.pdf")[0]], numbers="", broadcast="@news"
+            )[0],
+            0,
+        )
+        self.assertEqual(
+            self.run_script(
+                self.responses(later, "new.pdf"),
+                numbers="",
+                broadcast="@news",
+                today="2026-11-06",
+            )[0],
+            0,
+        )
+
+    def test_broadcast_pending_survives_disable_and_source_failure(self):
+        def ok():
+            return Response(b'{"ok":true}', "https://api.telegram.org/")
+
+        self.assertEqual(
+            self.run_script(
+                self.responses(make_pdf("111111 01.01.2027 08:00-09:00")),
+                numbers="",
+                broadcast="1",
+            )[0],
+            0,
+        )
+        rejected = Response(
+            b'{"ok":false,"error_code":400}', "https://api.telegram.org/"
+        )
+        pdf = make_pdf("222222 02.01.2027 08:00-09:00")
+        self.assertEqual(
+            self.run_script(
+                self.responses(pdf, "new.pdf") + [rejected], numbers="", broadcast="1"
+            )[0],
+            1,
+        )
+        self.assertEqual(len(monitor.load_state(self.state_path).broadcast_pending), 1)
+        with (
+            patch(
+                "visa_pickup_monitor.monitoring.read_settings",
+                return_value={"NUMBERS": "123456"},
+            ),
+            patch(
+                "visa_pickup_monitor.monitoring.fetch",
+                side_effect=monitor.MonitorError("offline"),
+            ),
+        ):
+            self.assertEqual(monitoring.main(self.state_path), 1)
+        self.assertFalse(monitor.load_state(self.state_path).broadcast_baseline)
+        requests = []
+        self.assertEqual(
+            self.run_script(
+                [URLError("offline")] * 3 + [ok()],
+                numbers="",
+                broadcast="@new",
+                requests=requests,
+            )[0],
+            1,
+        )
+        self.assertEqual(json.loads(requests[-1].data)["chat_id"], "@new")
+        self.assertEqual(monitor.load_state(self.state_path).broadcast_pending, [])
+        self.assertFalse(monitor.load_state(self.state_path).broadcast_baseline)
+        self.assertEqual(
+            self.run_script(self.responses(pdf), numbers="", broadcast="@new")[0], 0
+        )
+
+    def test_broadcast_and_personal_delivery_are_independent(self):
+        def ok():
+            return Response(b'{"ok":true}', "https://api.telegram.org/")
+
+        self.assertEqual(
+            self.run_script(
+                self.responses(make_pdf("111111 01.01.2027 08:00-09:00")),
+                numbers="123456",
+                telegram=True,
+                broadcast="2",
+            )[0],
+            0,
+        )
+        pdf = make_pdf("123456 02.01.2027 08:00-09:00")
+        rejected = Response(
+            b'{"ok":false,"error_code":400}', "https://api.telegram.org/"
+        )
+        requests = []
+        result = self.run_script(
+            self.responses(pdf, "new.pdf") + [rejected, ok(), ok()],
+            numbers="123456",
+            telegram=True,
+            broadcast="2",
+            requests=requests,
+        )[0]
+        self.assertEqual(result, 1)
+        messages = [json.loads(request.data) for request in requests if request.data]
+        self.assertEqual(
+            [message["chat_id"] for message in messages], ["456", "2", "456"]
+        )
+        self.assertIn("New pickup dates", messages[1]["text"])
+        self.assertEqual(monitor.load_state(self.state_path).notified_numbers, [])
+
+    def test_broadcast_failure_does_not_prevent_personal_delivery(self):
+        def ok():
+            return Response(b'{"ok":true}', "https://api.telegram.org/")
+
+        self.assertEqual(
+            self.run_script(
+                self.responses(make_pdf("111111 01.01.2027 08:00-09:00")),
+                numbers="123456",
+                telegram=True,
+                broadcast="2",
+            )[0],
+            0,
+        )
+        pdf = make_pdf("123456 02.01.2027 08:00-09:00")
+        rejected = Response(
+            b'{"ok":false,"error_code":400}', "https://api.telegram.org/"
+        )
+        requests = []
+        self.assertEqual(
+            self.run_script(
+                self.responses(pdf, "new.pdf") + [ok(), rejected, ok()],
+                numbers="123456",
+                telegram=True,
+                broadcast="2",
+                requests=requests,
+            )[0],
+            1,
+        )
+        messages = [json.loads(request.data) for request in requests if request.data]
+        self.assertEqual(
+            [message["chat_id"] for message in messages], ["456", "2", "456"]
+        )
+        state = monitor.load_state(self.state_path)
+        self.assertEqual(state.notified_numbers, ["123456"])
+        self.assertEqual(len(state.broadcast_pending), 1)
+
+    def test_broadcast_does_not_send_if_saving_discovery_fails(self):
+        self.assertEqual(
+            self.run_script(
+                self.responses(make_pdf("111111 01.01.2027 08:00-09:00")),
+                numbers="",
+                broadcast="2",
+            )[0],
+            0,
+        )
+        before = self.state_path.read_bytes()
+        pdf = make_pdf("222222 02.01.2027 08:00-09:00")
+        with (
+            patch(
+                "visa_pickup_monitor.monitoring.save_state",
+                side_effect=monitor.MonitorError("disk failure"),
+            ),
+            patch("visa_pickup_monitor.monitoring.send_telegram") as sender,
+        ):
+            self.assertEqual(
+                self.run_script(
+                    self.responses(pdf, "new.pdf"), numbers="", broadcast="2"
+                )[0],
+                1,
+            )
+            sender.assert_not_called()
+        self.assertEqual(self.state_path.read_bytes(), before)
+
+    def test_broadcast_batches_retry_only_unconfirmed_parts(self):
+        def ok():
+            return Response(b'{"ok":true}', "https://api.telegram.org/")
+
+        self.assertEqual(
+            self.run_script(
+                self.responses(make_pdf("111111 01.01.2027 08:00-09:00")),
+                numbers="",
+                broadcast="1",
+            )[0],
+            0,
+        )
+        lines = "\n".join(
+            f"{i:06d} 02.01.2027 08:00-09:00" for i in range(200000, 200180)
+        )
+        rejected = Response(
+            b'{"ok":false,"error_code":400}', "https://api.telegram.org/"
+        )
+        requests = []
+        self.assertEqual(
+            self.run_script(
+                self.responses(make_pdf(lines), "new.pdf") + [ok(), rejected],
+                numbers="",
+                broadcast="1",
+                requests=requests,
+            )[0],
+            1,
+        )
+        first = json.loads(requests[-2].data)["text"]
+        failed = json.loads(requests[-1].data)["text"]
+        self.assertLessEqual(len(first), 4096)
+        self.assertLessEqual(len(failed), 4096)
+        self.assertEqual(
+            monitor.load_state(self.state_path).broadcast_pending, [failed]
+        )
+        requests = []
+        self.assertEqual(
+            self.run_script(
+                [URLError("offline")] * 3 + [ok()],
+                numbers="",
+                broadcast="2",
+                requests=requests,
+            )[0],
+            1,
+        )
+        self.assertEqual(
+            json.loads(requests[-1].data), {"chat_id": "2", "text": failed}
+        )
+        self.assertEqual(monitor.load_state(self.state_path).broadcast_pending, [])
+
+    def test_broadcast_first_baseline_bypasses_personal_cache(self):
+        pdf = make_pdf("111111 01.01.2027 08:00-09:00")
+        self.assertEqual(self.run_script(self.responses(pdf), numbers="123456")[0], 0)
+        self.assertEqual(
+            self.run_script(self.responses(pdf), numbers="123456", broadcast="2")[0], 0
+        )
+        self.assertTrue(monitor.load_state(self.state_path).broadcast_baseline)
 
     def run_cli(self, cwd, *arguments, env=None):
         return subprocess.run(
@@ -849,7 +1106,7 @@ class ScriptTests(unittest.TestCase):
                     {"123456": "https://embassy.example/discovery.pdf"},
                 )
                 self.assertEqual(saved["notified_numbers"], ["123456"])
-                self.assertEqual(saved["version"], 3)
+                self.assertEqual(saved["version"], 4)
                 self.assertNotIn("daily", saved)
 
     def test_legacy_state_suppresses_previously_delivered_error_alert(self):
@@ -899,6 +1156,8 @@ class ScriptTests(unittest.TestCase):
                 notified_numbers=["123456"],
             )
         )
+        for key in ("broadcast_baseline", "broadcast_seen", "broadcast_pending"):
+            del state[key]
         state["daily"] = None
         self.state_path.parent.mkdir(parents=True)
         self.state_path.write_text(json.dumps({"version": 2, **state}))
@@ -906,7 +1165,7 @@ class ScriptTests(unittest.TestCase):
             self.assertEqual(self.run_script([], numbers="123456", telegram=True)[0], 0)
             sender.assert_not_called()
         saved = json.loads(self.state_path.read_text())
-        self.assertEqual(saved["version"], 3)
+        self.assertEqual(saved["version"], 4)
         self.assertNotIn("daily", saved)
         self.assertEqual(saved["notified_numbers"], ["123456"])
 

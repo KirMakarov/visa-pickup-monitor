@@ -12,6 +12,10 @@ class State:
     notified_numbers: list[str] = field(default_factory=list)
     error_notifications: list[str] = field(default_factory=list)
 
+    broadcast_baseline: bool = False
+    broadcast_seen: list[str] = field(default_factory=list)
+    broadcast_pending: list[str] = field(default_factory=list)
+
     def all_found(self, targets: tuple[str, ...]) -> bool:
         return set(targets) <= self.found_numbers.keys()
 
