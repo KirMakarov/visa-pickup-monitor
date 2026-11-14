@@ -1065,7 +1065,7 @@ class ScriptTests(unittest.TestCase):
         self,
     ):
         state = {
-            "version": 3,
+            "version": 4,
             **monitor.asdict(monitor.State(last_targets=["invalid"])),
         }
         self.state_path.parent.mkdir(parents=True)
@@ -1083,103 +1083,30 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(self.state_path.read_bytes(), original)
         self.assertEqual(requests, [])
 
-    def test_legacy_state_preserves_found_and_notified_history_when_upgraded(self):
-        for version in (1, 2):
-            with self.subTest(version=version):
-                self.write_legacy_state(version)
-                result, _, stderr = self.run_script(
-                    [
-                        self.responses(b"")[0],
-                        Response(
-                            make_pdf("654321 01.01.2020 08:00-10:00"),
-                            "https://embassy.example/current.pdf",
-                        ),
-                    ],
-                    expected_requests=["https://embassy.example/start"],
-                )
-                self.assertEqual(result, 0)
-                self.assertEqual(stderr, "")
-
-                saved = json.loads(self.state_path.read_text())
-                self.assertEqual(
-                    saved["found_numbers"],
-                    {"123456": "https://embassy.example/discovery.pdf"},
-                )
-                self.assertEqual(saved["notified_numbers"], ["123456"])
-                self.assertEqual(saved["version"], 4)
-                self.assertNotIn("daily", saved)
-
-    def test_legacy_state_suppresses_previously_delivered_error_alert(self):
-        for version in (1, 2):
-            with (
-                self.subTest(version=version),
-                patch("visa_pickup_monitor.monitoring.send_telegram") as sender,
-            ):
-                self.write_legacy_state(version)
-                result, _, stderr = self.run_script(
-                    [URLError("offline")] * 3, telegram=True
-                )
-                self.assertEqual(result, 1)
-                self.assertIn("Could not download the source page", stderr)
-                sender.assert_not_called()
-
-    def test_legacy_state_preserves_cache_and_silently_clears_failure_episode(self):
-        for version in (1, 2):
-            with (
-                self.subTest(version=version),
-                patch("visa_pickup_monitor.monitoring.send_telegram") as sender,
-            ):
-                self.write_legacy_state(version)
-                result, output, stderr = self.run_script(
-                    [
-                        self.responses(b"")[0],
-                        Response(
-                            make_pdf("654321 01.01.2020 08:00-10:00"),
-                            "https://embassy.example/current.pdf",
-                        ),
-                    ],
-                    telegram=True,
-                    expected_requests=["https://embassy.example/start"],
-                )
-                self.assertEqual(result, 0)
-                self.assertIn("already processed", output)
-                self.assertEqual(stderr, "")
-                sender.assert_not_called()
-                self.assertEqual(
-                    json.loads(self.state_path.read_text())["error_notifications"], []
-                )
-
-    def test_completed_legacy_state_is_upgraded_without_requests(self):
-        state = monitor.asdict(
-            monitor.State(
-                found_numbers={"123456": "https://embassy.example/list.pdf"},
-                notified_numbers=["123456"],
-            )
-        )
-        for key in ("broadcast_baseline", "broadcast_seen", "broadcast_pending"):
-            del state[key]
-        state["daily"] = None
-        self.state_path.parent.mkdir(parents=True)
-        self.state_path.write_text(json.dumps({"version": 2, **state}))
-        with patch("visa_pickup_monitor.monitoring.send_telegram") as sender:
-            self.assertEqual(self.run_script([], numbers="123456", telegram=True)[0], 0)
-            sender.assert_not_called()
-        saved = json.loads(self.state_path.read_text())
-        self.assertEqual(saved["version"], 4)
-        self.assertNotIn("daily", saved)
-        self.assertEqual(saved["notified_numbers"], ["123456"])
-
-    def test_corrupt_reporting_state_is_not_overwritten(self):
-        state = {
-            "version": 2,
-            **monitor.asdict(monitor.State()),
-            "daily": {"date": "bad"},
-        }
-        self.state_path.parent.mkdir(parents=True)
-        original = json.dumps(state)
-        self.state_path.write_text(original)
-        self.assertEqual(self.run_script([])[0], 1)
-        self.assertEqual(self.state_path.read_text(), original)
+    def test_legacy_state_is_rejected_without_changing_history_or_requesting_source(
+        self,
+    ):
+        for version in (1, 2, 3):
+            for numbers in ("123456", "123456,000123"):
+                with (
+                    self.subTest(version=version, numbers=numbers),
+                    patch("visa_pickup_monitor.monitoring.send_telegram") as sender,
+                ):
+                    self.write_legacy_state(version)
+                    original = self.state_path.read_bytes()
+                    result, stdout, stderr = self.run_script(
+                        [], numbers=numbers, telegram=True, expected_requests=[]
+                    )
+                    self.assertEqual(result, 1)
+                    self.assertEqual(stdout, "")
+                    self.assertIn(
+                        "Invalid state; restore data/state.json before retrying.",
+                        stderr,
+                    )
+                    self.assertNotIn("Traceback", stderr)
+                    self.assertEqual(self.state_path.read_bytes(), original)
+                    sender.assert_called_once()
+                    self.assertIn("Monitor error", sender.call_args.args[1])
 
     def test_multiple_findings_and_quiet_checks_across_day_boundary(self):
         targets = "123456,000123,999999"

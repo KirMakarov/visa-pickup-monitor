@@ -61,7 +61,7 @@ Broadcast keeps checks active after personal monitoring completes. The same PDF 
 ## State and repeated checks
 
 The script creates `data/state.json` automatically. It contains private discovery and notification history and is ignored by Git. It is written atomically. Invalid or unreadable state causes an error instead of resetting history; restore a valid copy before retrying. Deleting state discards deduplication history and can repeat notifications.
-Recognized version-1, version-2 and version-3 state upgrades automatically, retaining discovery and notification history, error suppression, and cache eligibility. Report-only fields are discarded.
+Only state format version 4 is supported. Older versions are rejected without changing the file.
 
 - An unchanged PDF URL is downloaded and parsed once per calendar day in `Europe/Belgrade`. The source page is still checked on each active run.
 - A changed PDF URL or a newly added target not covered by the last successful processing triggers parsing immediately. Content replaced under the same URL after successful processing is detected on the following day.
