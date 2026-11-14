@@ -8,13 +8,6 @@ from unittest.mock import patch
 from visa_pickup_monitor import infrastructure as monitor
 
 
-def legacy_state():
-    state = monitor.asdict(monitor.State())
-    for key in ("broadcast_baseline", "broadcast_seen", "broadcast_pending"):
-        del state[key]
-    return state
-
-
 class StateTests(unittest.TestCase):
     def test_atomic_save_failure_keeps_previous_state_and_removes_temporary_file(self):
         with TemporaryDirectory() as directory:
@@ -46,9 +39,13 @@ class StateTests(unittest.TestCase):
             ("version is missing", missing_version),
             ("state keys are missing", missing_key),
             ("state has an extra key", extra_key),
+            ("version 1 is unsupported", {**baseline, "version": 1}),
+            ("version 2 is unsupported", {**baseline, "version": 2}),
+            ("version 3 is unsupported", {**baseline, "version": 3}),
             ("version is unsupported", {**baseline, "version": 5}),
             ("boolean is not an integer version", {**baseline, "version": True}),
-            ("fraction is not an integer version", {**baseline, "version": 3.0}),
+            ("float is not an integer version", {**baseline, "version": 4.0}),
+            ("string is not an integer version", {**baseline, "version": "4"}),
             ("last targets are not a list", {**baseline, "last_targets": None}),
             (
                 "last target is not an application number",
@@ -154,77 +151,23 @@ class StateTests(unittest.TestCase):
                     with self.assertRaises(monitor.MonitorError):
                         monitor.load_state(path)
 
-    def test_legacy_daily_fields_are_rejected_independently(self):
-        baseline = {
-            "version": 2,
-            **legacy_state(),
-            "daily": {
-                "date": "2026-11-05",
-                "successful": 2,
-                "failed": 1,
-                "pdf_downloaded": True,
-                "errors": [],
-                "report_delivered": False,
-            },
-        }
-        daily = baseline["daily"]
-        assert isinstance(daily, dict)
-        missing_daily_key = daily.copy()
-        del missing_daily_key["failed"]
-        extra_daily_key = {**daily, "extra": 1}
-        examples = (
-            ("daily is not an object", []),
-            ("daily key is missing", missing_daily_key),
-            ("daily has an extra key", extra_daily_key),
-            ("date is not a string", {**daily, "date": 20261105}),
-            ("date is not valid", {**daily, "date": "2026-02-30"}),
-            ("date is not canonical", {**daily, "date": "20261105"}),
-            ("successful is not an integer", {**daily, "successful": True}),
-            ("successful is negative", {**daily, "successful": -1}),
-            ("failed is not an integer", {**daily, "failed": False}),
-            ("failed is negative", {**daily, "failed": -1}),
-            ("pdf_downloaded is not a boolean", {**daily, "pdf_downloaded": 1}),
-            ("errors are not a list", {**daily, "errors": {}}),
-            ("error is not a string", {**daily, "errors": [1]}),
-            ("report_delivered is not a boolean", {**daily, "report_delivered": 0}),
+    def test_current_state_round_trip_preserves_history(self):
+        state = monitor.State(
+            last_pdf_url="https://embassy.example/current.pdf",
+            last_processed_date="2026-11-05",
+            last_targets=["123456"],
+            found_numbers={"123456": "https://embassy.example/discovery.pdf"},
+            notified_numbers=["123456"],
+            error_notifications=["Source unavailable"],
+            broadcast_baseline=True,
+            broadcast_seen=["123456 05.11.2026"],
+            broadcast_pending=["Pending broadcast"],
         )
         with TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
-            for label, invalid_daily in examples:
-                with self.subTest(label=label):
-                    path.write_text(
-                        json.dumps({**baseline, "daily": invalid_daily}),
-                        encoding="utf-8",
-                    )
-                    with self.assertRaises(monitor.MonitorError):
-                        monitor.load_state(path)
-
-    def test_supported_state_versions_load_and_legacy_daily_is_optional(self):
-        v1 = {"version": 1, **legacy_state()}
-        v2_without_daily = {
-            "version": 2,
-            **legacy_state(),
-            "daily": None,
-        }
-        v2_with_daily = {
-            "version": 2,
-            **legacy_state(),
-            "daily": {
-                "date": "2026-11-05",
-                "successful": 2,
-                "failed": 0,
-                "pdf_downloaded": True,
-                "errors": [],
-                "report_delivered": False,
-            },
-        }
-        v3 = {"version": 3, **legacy_state()}
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "state.json"
-            for data in (v1, v2_without_daily, v2_with_daily, v3):
-                with self.subTest(version=data["version"], daily=data.get("daily")):
-                    path.write_text(json.dumps(data), encoding="utf-8")
-                    self.assertEqual(monitor.load_state(path), monitor.State())
+            monitor.save_state(state, path)
+            self.assertEqual(json.loads(path.read_text())["version"], 4)
+            self.assertEqual(monitor.load_state(path), state)
 
     def test_cache_date_uses_belgrade_with_winter_and_summer_offsets(self):
         for now, expected in (

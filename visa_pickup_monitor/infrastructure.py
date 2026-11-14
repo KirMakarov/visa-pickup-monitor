@@ -117,44 +117,10 @@ def load_state(path: Path) -> State:  # noqa: C901
         if not isinstance(data, dict):
             raise ValueError
         version = data.pop("version", None)
-        if type(version) is not int or version not in (1, 2, 3, 4):
+        if type(version) is not int or version != 4:
             raise ValueError
-        broadcast_keys = {"broadcast_baseline", "broadcast_seen", "broadcast_pending"}
-        expected = set(asdict(State())) | ({"daily"} if version == 2 else set())
-        if version < 4:
-            expected -= broadcast_keys
-        if set(data) != expected:
+        if set(data) != set(asdict(State())):
             raise ValueError
-        daily = data.pop("daily", None)
-        if daily is not None:
-            if not isinstance(daily, dict) or set(daily) != {
-                "date",
-                "successful",
-                "failed",
-                "pdf_downloaded",
-                "errors",
-                "report_delivered",
-            }:
-                raise ValueError
-            if (
-                not isinstance(daily["date"], str)
-                or date.fromisoformat(daily["date"]).isoformat() != daily["date"]
-            ):
-                raise ValueError
-            if any(
-                type(daily[key]) is not int or daily[key] < 0
-                for key in ("successful", "failed")
-            ):
-                raise ValueError
-            if any(
-                type(daily[key]) is not bool
-                for key in ("pdf_downloaded", "report_delivered")
-            ):
-                raise ValueError
-            if not isinstance(daily["errors"], list) or any(
-                not isinstance(x, str) for x in daily["errors"]
-            ):
-                raise ValueError
         state = State(**data)
         if type(state.broadcast_baseline) is not bool:
             raise ValueError
